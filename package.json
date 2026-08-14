@@ -30,5 +30,13 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+github:moon09300731/dsh-approval-gate.git"
+  },
+  "homepage": "https://github.com/moon09300731/dsh-approval-gate",
+  "bugs": {
+    "url": "https://github.com/moon09300731/dsh-approval-gate/issues"
   }
 }
