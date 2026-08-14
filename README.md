@@ -1,13 +1,17 @@
 # dsh-approval-gate
 
-DeepSeek Harness 自动审批门控插件：**Flash 模型预判风险，安全自动批准，危险转人工**。
+DeepSeek Harness 自动审批门控插件 v2：**多级判定管道，安全自动批准、危险转人工（fail-safe）**。
 
-当会话的权限预设为 `auto-approve`（自动审批（Flash））时，每次审批请求（写入/命令升级）先由 flash 模型（deepseek-v4-flash）判断该操作是否会造成**无法回补（不可逆）**的后果：
+当会话的权限预设为 `auto-approve`（自动审批（Flash））时，每次审批请求（沙箱越界）按四级管道判定：
 
-- **可回补（SAFE）** → 自动批准，不弹窗
-- **不可回补 / 不确定 / 判断失败 / 超时** → 转人工审批（**fail-safe，绝不自动放行**）
+```
+DENY（不可逆危险词）→ 白名单（确定性规则）→ flash 兜底（LLM 多因子）→ 人工学习
+```
 
-另有**不可逆关键词预检**（`rm -rf` / force push / drop table / 格式化等）直接转人工，省一次 flash 调用。
+- **① DENY 层**：`rm -rf` / `drop table` / `force push` / 格式化等不可逆危险词命中 → 转人工（**最高优先，fail-safe**）
+- **② 白名单层**：命中规则 → 直接放行（确定性，不过 LLM）。默认规则 `{mode:"workspace-write"}` —— 工作区写入（可回补）自动放行，对应 Claude Code `acceptEdits` / Codex `workspace-write` 哲学
+- **③ flash 兜底**：仅 `danger-full-access`（任意文件/系统）越界走 LLM 多因子判断（不可回补 + 敏感资源 + 沙箱模式语义）
+- **④ 人工学习**：flash 判 RISKY 转人工、被用户批准 ≥3 次 → 自动沉淀进白名单（`danger-full-access` 永不自动沉淀）
 
 ## 安装
 
@@ -43,10 +47,37 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
         sandbox: workspace-write
         approval: ask
         name: 自动审批（Flash）
-        description: Flash 预判写入/命令是否会造成不可回补的结果：安全自动批准，有风险转人工审批。
+        description: 多级判定：工作区写入自动放行，危险操作转人工审批。
 ```
 
 重启 `dsh web` 后，权限下拉菜单会出现「自动审批（Flash）」选项。
+
+## 配置（可选）
+
+数据文件统一放在 `$DSH_HOME/auto-approve/`（默认 `~/.dsh/auto-approve/`）：
+
+| 文件 | 说明 |
+|------|------|
+| `allowlist.json` | 白名单/黑名单配置（首次运行自动生成默认值） |
+| `learning.json` | 学习状态（自动维护，跨会话持久化） |
+| `audit.log` | 审计日志（追加式） |
+
+`allowlist.json` 结构：
+
+```json
+{
+  "denyKeywords": ["rm -rf", "drop table", "force push", "格式化"],
+  "allowRules": [
+    { "mode": "workspace-write", "description": "工作区写入自动放行" },
+    { "tool": "bash", "mode": "workspace-write", "contains": "git add", "description": "特定工具+模式+关键词" }
+  ],
+  "learning": { "enabled": true, "threshold": 3 }
+}
+```
+
+- `denyKeywords`：命中即转人工（不可逆危险操作）
+- `allowRules`：每条规则 `tool` / `mode` / `contains` 三者均满足才放行（缺省表示任意）
+- `learning.threshold`：同一「工具+模式」被人工批准达到该次数后自动沉淀白名单
 
 ## 使用
 
@@ -54,11 +85,12 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 
 ## 安全设计
 
-1. **fail-safe**：任何异常（flash 调用失败、超时 20s、输出不明确）一律转人工，绝不自动放行
-2. **不可逆关键词预检**：命中 `rm -rf`、`push --force`、`drop table`、`mkfs`、`terraform destroy` 等直接转人工，不消耗模型调用
-3. **按会话门控**：只有显式选中「自动审批（Flash）」预设的会话才介入
-4. **只预判、不执行**：插件只返回允许/转人工决策，不修改审批流程的其他环节
-5. 仅用 flash 判断（省额度）；审批请求只携带工具名 + 理由文本，不含完整命令参数
+1. **DENY 层最高优先**：不可逆危险词命中即转人工，不消耗模型调用、无误判
+2. **fail-safe**：任何异常（flash 调用失败、超时 20s、输出不明确）一律转人工，绝不自动放行
+3. **可回补优先**：`workspace-write`（写工作区）默认放行，`danger-full-access`（任意文件/系统）才走 flash 判断
+4. **危险操作永不自动沉淀**：学习闭环只沉淀非 danger 模式，`danger-full-access` 永远人工
+5. **按会话门控**：只有显式选中「自动审批（Flash）」预设的会话才介入
+6. **只预判、不执行**：插件只返回允许/转人工决策，不修改审批流程的其他环节
 
 > 警告：自动审批会显著降低人工介入频率。**仅供可信环境使用**，涉及生产数据、远程系统、支付扣费等高风险场景请保持 `ask` 预设。
 
@@ -66,8 +98,10 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 
 - 挂载于 `approval/request` 瀑布最前（`prepend: true`，先于 web answerer 接单）
 - 门控：`permissionPresets.current(session.events) === 'auto-approve'`
+- DSH 审批触发点是沙箱越界，`reason` 固定为 `escalate sandbox to <mode>: <justification>`，`mode` 仅 `workspace-write` / `danger-full-access` 两级
 - flash 判断参数：`reasoningEffort: 'off'` + `maxTokens: 64`（默认 maxTokens:16 且开推理时输出会被推理 token 耗尽，导致误判 RISKY）
 - 超时兜底：`Promise.race` + `ctx.timeout(20s)`
+- 学习闭环通过 waterfall 的 `next()` 返回值捕获人工批准结果（`allowed-once`）
 
 ## License
 
