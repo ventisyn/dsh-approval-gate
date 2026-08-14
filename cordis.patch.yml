@@ -1,0 +1,7 @@
+# dsh-approval-gate bundle patch: inserts the auto-approval plugin row.
+# NOTE: the 'auto-approve' permission preset itself must be added manually
+# to the profile's cordis.patch.yml (see README) — dynamic plugins cannot
+# extend the frozen presets table.
+- insert:
+    - id: dsh-approval-gate
+      name: 'dsh-approval-gate'
