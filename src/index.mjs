@@ -150,9 +150,9 @@ if (!config || typeof config !== 'object') {
   if (config.version !== 3) { config.version = 3; saveJson(ALLOWLIST_PATH, config) }
 }
 
-const learning = loadJson(LEARNING_PATH, { enabled: true, threshold: 3, stats: {} })
-learning.enabled = learning.enabled !== false
-learning.threshold = learning.threshold || 3
+const learning = loadJson(LEARNING_PATH, { enabled: true, stats: {} })
+// enabled 以 allowlist.json 的 learning 段为单一配置源（旧 learning.json 的 enabled 仅作兼容回退）
+learning.enabled = config.learning ? config.learning.enabled !== false : learning.enabled !== false
 learning.stats = learning.stats || {}
 
 function looksDeny(text) {
@@ -249,6 +249,8 @@ export default {
         const category = riskyMatch[1].toLowerCase()
         return { verdict: 'risky', category }
       }
+      // 裸 RISKY（无类别，旧协议残留）→ 按中立处理（有计数/裁决兜底）
+      if (trimmed.includes('RISKY')) return { verdict: 'risky', category: 'neutral' }
       if (trimmed.includes('SAFE')) return { verdict: 'safe' }
       throw new Error('flash 输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
     }
@@ -268,10 +270,13 @@ export default {
           return 'timeout'
         })
         try {
-          const result = await Promise.race([
-            judgeOnce(toolName, mode, justification, controller.signal).then((r) => ({ ...r, timedOut: false })),
-            timer.then(() => ({ timedOut: true }))
-          ])
+          // judgeOnce 的 rejection 在这里消化：race 被 timer 先 settle 后，
+          // abort 引发的流错误（ABORTED）不能变成 unhandled rejection（Node strict 模式会崩进程）
+          const judge = judgeOnce(toolName, mode, justification, controller.signal)
+            .then((r) => ({ ...r, timedOut: false }))
+            .catch((error) => ({ judgeError: error }))
+          const result = await Promise.race([judge, timer.then(() => ({ timedOut: true }))])
+          if (result.judgeError) throw result.judgeError
           return result
         } finally {
           controller.abort('dsh-approval-gate: flash 判断结束')
@@ -337,34 +342,56 @@ export default {
 
         const cat = category || 'neutral'
 
-        // 4a. 硬风险类别（deletion/credential/remote/system/bulk）→ 直接转人工（必须人工确认，不计数不学习）
+        // 4a. flash 完全失败（超时×2/异常×2）→ 转人工（fail-safe：无法判断绝不自动放行）
+        if (failed) {
+          audit(`FAILED  ${toolName} mode=${mode || 'none'} → 人工 | ${reason.slice(0, 120)}`)
+          return next()
+        }
+
+        // 4b. 硬风险类别（deletion/credential/remote/system/bulk）→ 直接转人工（必须人工确认，不计数不学习）
         const hard = config.hardCategories || DEFAULT_HARD_CATEGORIES
         if (hard.includes(cat)) {
           audit(`HARD    ${toolName} mode=${mode || 'none'} category=${cat} → 人工 | ${reason.slice(0, 120)}`)
           return next()
         }
 
-        // 4b. denyRules 命中（此前用户裁决拒绝过的 key）→ 直接转人工
+        // 4c. 协议外类别（模型输出未知类别）→ 判定不可靠，fail-safe 转人工
+        if (cat !== 'neutral') {
+          audit(`UNKNOWN ${toolName} mode=${mode || 'none'} category=${cat} → 人工 | ${reason.slice(0, 120)}`)
+          return next()
+        }
+
+        // 4d. denyRules 命中（此前用户裁决拒绝过的 key）→ 直接转人工（拒绝优先于沉淀）
         if (matchRule(config.denyRules, toolName, mode, cat, justification)) {
           audit(`DENYRULE ${toolName} mode=${mode || 'none'} category=${cat} → 人工 | ${reason.slice(0, 120)}`)
           return next()
         }
 
-        // 4c. 中立类别（neutral）：计数放行，第 N 次转人工裁决
+        // 4e. 沉淀规则（带 category 的学习规则，用户批准过）→ 直接放行，不再计数
         const key = learnKey(toolName, mode, cat)
+        const learnedRule = matchRule(config.allowRules, toolName, mode, cat, justification)
+        if (learnedRule) {
+          audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${learnedRule.description || '沉淀规则'})`)
+          delete learning.stats[key]
+          saveJson(LEARNING_PATH, learning)
+          return 'allowed-once'
+        }
+
+        // 4f. 中立类别（neutral）：计数放行，第 N 次转人工裁决
         const threshold = config.riskyThreshold || 3
         const count = (learning.stats[key] || 0) + 1
         learning.stats[key] = count
         saveJson(LEARNING_PATH, learning)
 
         if (count < threshold) {
-          audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-count=${count}/${threshold}${failed ? '，flash失败降级' : ''}) | ${reason.slice(0, 100)}`)
+          audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-count=${count}/${threshold}) | ${reason.slice(0, 100)}`)
           return 'allowed-once'
         }
 
         // 第 N 次 → 人工裁决
         audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} count=${count}/${threshold} → 人工 outcome=? | ${reason.slice(0, 120)}`)
         const outcome = await next()
+        audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
 
         if (outcome === 'allowed-once' && learning.enabled) {
           // 批准 → 沉淀为自动放行规则（tool+mode+category；无裸宽规则）
