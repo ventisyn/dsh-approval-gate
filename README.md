@@ -5,7 +5,7 @@ DeepSeek Harness 自动审批门控插件 v3：**最小人工介入，只把必�
 当会话的权限预设为 `auto-approve`（自动审批（Flash））时，每次审批请求（沙箱越界）按管道判定：
 
 ```
-DENY（不可逆危险词）→ 白名单（确定性规则）→ denyRules（裁决拒绝升级）→ flash（SAFE / 硬类别 / 中立计数）→ 裁决学习
+DENY（不可逆危险词）→ 白名单（确定性规则）→ denyRules（裁决拒绝升级）→ flash（SAFE / 硬类别 / 中立确认）→ 学习沉淀
 ```
 
 - **① DENY 层**：`rm -rf` / `drop table` / `force push` / 格式化等不可逆危险词命中 → 转人工（**最高优先，fail-safe**）
@@ -14,11 +14,11 @@ DENY（不可逆危险词）→ 白名单（确定性规则）→ denyRules（�
 - **④ flash 判定**（仅越界请求）：输出 `SAFE` 或 `RISKY:<category>`
   - `SAFE` → 自动放行
   - 硬风险类别（`deletion` 删除 / `credential` 凭据 / `remote` 远程生产 / `system` 系统路径 / `bulk` 批量不可回补）→ **直接转人工**（必须人工确认，不计数、不学习）
-  - `neutral`（中立，无硬风险特征）→ **计数放行**：前 N-1 次直接放行（audit 记录），第 N 次转人工裁决
-- **⑤ 裁决学习**：中立类别第 N 次转人工后
-  - 用户**批准** → 沉淀为自动放行规则 `{tool, mode, category}`（以后同类直接放行，不过 flash）
-  - 用户**拒绝** → 升级进 denyRules（以后同类直接转人工）
-  - 取消/不可用 → 保留计数，下次继续转人工
+  - `neutral`（中立，无硬风险特征）→ **人工确认制**：前 N-1 次转人工确认，第 N 次起自动放行
+- **⑤ 学习沉淀**（neutral 类别，N=3 时：确认 2 次，第 3 次自动放行）
+  - 用户**批准** → 确认计数 +1；确认达 N-1 次后，第 N 次自动放行并沉淀规则 `{tool, mode, category}`（以后同类直接放行，不过 flash）
+  - 用户**拒绝** → 升级进 denyRules（以后同类直接转人工，不再确认）
+  - 取消/不可用 → 不计数（用户未表态，下次仍人工确认）
 
 ## 安装
 
@@ -91,7 +91,7 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 - `allowRules`：每条规则 `tool` / `mode` / `category` / `contains` 均满足才放行（缺省表示任意）。学习沉淀的规则也会写入这里
 - `denyRules`：用户裁决拒绝后自动写入，命中即转人工（不学习）
 - `hardCategories`：flash 判 RISKY 且命中这些类别 → 直接转人工（不计数、不学习）
-- `riskyThreshold`：中立类别被判 RISKY 的计数阈值，达到后转人工裁决（默认 3）
+- `riskyThreshold`：中立类别的人工确认阈值（默认 3）——同一「工具+模式+类别」被人工确认 N-1 次后，第 N 次起自动放行并沉淀规则
 - `judgeTimeoutMs`：单次 flash 判断超时（默认 20000ms，超时自动重试 1 次，仍超时转人工）
 
 ## 使用

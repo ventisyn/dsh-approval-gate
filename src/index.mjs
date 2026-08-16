@@ -6,9 +6,10 @@
  *
  * 设计目标：最小人工介入。人工只出现在两类场景：
  *   1. 必须人工确认：DENY 危险词、硬风险类别（deletion/credential/remote/system/bulk）
- *   2. 中立操作被模型多次（≥N 次）误判 RISKY 时，请用户裁决一次：
- *      批准 → 沉淀为自动放行规则（tool+mode+category），以后同类直接放行
+ *   2. 中立操作（neutral）：前 N-1 次人工确认，第 N 次起自动放行并沉淀为规则：
+ *      批准 → 计数，确认达 N-1 次后同类操作自动放行（沉淀 {tool,mode,category} 规则）
  *      拒绝 → 升级为永久人工规则（denyRules），以后同类直接转人工
+ *      取消 → 不计数（用户未表态，下次仍人工确认）
  *
  * DSH 审批触发点：命令在沙箱内被拒后，模型带 sandbox_permissions 重试，
  * 触发 approval.request，reason 固定为：
@@ -377,33 +378,37 @@ export default {
           return 'allowed-once'
         }
 
-        // 4f. 中立类别（neutral）：计数放行，第 N 次转人工裁决
+        // 4f. 中立类别（neutral）：前 N-1 次人工确认，第 N 次起自动放行并沉淀
+        //     （同一 key 被用户连续确认 N-1 次后视为可信，第 N 次自动放行并写入沉淀规则）
         const threshold = config.riskyThreshold || 3
-        const count = (learning.stats[key] || 0) + 1
-        learning.stats[key] = count
-        saveJson(LEARNING_PATH, learning)
+        const confirmed = learning.stats[key] || 0
 
-        if (count < threshold) {
-          audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-count=${count}/${threshold}) | ${reason.slice(0, 100)}`)
+        if (confirmed >= threshold - 1) {
+          // 已确认 N-1 次 → 第 N 次自动放行 + 沉淀规则
+          if (learning.enabled) {
+            const rule = { tool: toolName, category: cat }
+            if (mode) rule.mode = mode
+            if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category)) {
+              rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 连续人工确认 ${threshold - 1} 次`
+              config.allowRules.push(rule)
+              saveJson(ALLOWLIST_PATH, config)
+              audit(`LEARN   ${key} 人工确认 ${confirmed} 次达阈值，已沉淀白名单 ${JSON.stringify(rule)}`)
+            }
+          }
+          audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-learned=${confirmed + 1}/${threshold}) | ${reason.slice(0, 100)}`)
+          delete learning.stats[key]
+          saveJson(LEARNING_PATH, learning)
           return 'allowed-once'
         }
 
-        // 第 N 次 → 人工裁决
-        audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} count=${count}/${threshold} → 人工 outcome=? | ${reason.slice(0, 120)}`)
+        // 前 N-1 次 → 人工确认
+        audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold} → 人工 outcome=? | ${reason.slice(0, 120)}`)
         const outcome = await next()
         audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
 
         if (outcome === 'allowed-once' && learning.enabled) {
-          // 批准 → 沉淀为自动放行规则（tool+mode+category；无裸宽规则）
-          const rule = { tool: toolName, category: cat }
-          if (mode) rule.mode = mode
-          if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category)) {
-            rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 多次误判后人工批准`
-            config.allowRules.push(rule)
-            saveJson(ALLOWLIST_PATH, config)
-            audit(`LEARN   ${key} 达阈值 ${threshold}，已沉淀白名单 ${JSON.stringify(rule)}`)
-          }
-          delete learning.stats[key]
+          // 批准 → 确认计数 +1（未达阈值，下次同类仍人工确认）
+          learning.stats[key] = confirmed + 1
           saveJson(LEARNING_PATH, learning)
         } else if (outcome === 'rejected') {
           // 拒绝 → 升级为永久人工规则
@@ -417,7 +422,7 @@ export default {
           delete learning.stats[key]
           saveJson(LEARNING_PATH, learning)
         }
-        // cancelled/unavailable：保留计数，下次继续转人工
+        // cancelled/unavailable：不计数（用户未表态，下次仍人工确认）
         return outcome
       } catch (error) {
         console.error(`[${NAME}] 判断过程出错，回退人工`, error)
