@@ -127,6 +127,18 @@ function audit(line) {
 }
 
 // 首次加载时初始化配置文件；旧版（v1）自动补齐 v3 字段
+function normalizeConfig(raw) {
+  const cfg = raw && typeof raw === 'object' ? raw : {}
+  cfg.denyKeywords = cfg.denyKeywords || DEFAULT_DENY_KEYWORDS
+  cfg.allowRules = cfg.allowRules || DEFAULT_ALLOW_RULES
+  cfg.denyRules = cfg.denyRules || []
+  cfg.hardCategories = cfg.hardCategories || DEFAULT_HARD_CATEGORIES
+  cfg.riskyThreshold = cfg.riskyThreshold || 3
+  cfg.judgeTimeoutMs = cfg.judgeTimeoutMs || 20000
+  cfg.learning = cfg.learning || { enabled: true }
+  return cfg
+}
+
 let config = loadJson(ALLOWLIST_PATH, null)
 if (!config || typeof config !== 'object') {
   config = {
@@ -141,14 +153,20 @@ if (!config || typeof config !== 'object') {
   }
   saveJson(ALLOWLIST_PATH, config)
 } else {
-  config.denyKeywords = config.denyKeywords || DEFAULT_DENY_KEYWORDS
-  config.allowRules = config.allowRules || DEFAULT_ALLOW_RULES
-  config.denyRules = config.denyRules || []
-  config.hardCategories = config.hardCategories || DEFAULT_HARD_CATEGORIES
-  config.riskyThreshold = config.riskyThreshold || 3
-  config.judgeTimeoutMs = config.judgeTimeoutMs || 20000
-  config.learning = config.learning || { enabled: true }
+  config = normalizeConfig(config)
   if (config.version !== 3) { config.version = 3; saveJson(ALLOWLIST_PATH, config) }
+}
+
+// 热更新：每次审批前重新读盘 allowlist.json（小文件、审批频率低，无性能问题），
+// 使手动修改配置无需重启即可生效
+function reloadConfig() {
+  const disk = loadJson(ALLOWLIST_PATH, null)
+  if (disk && typeof disk === 'object') {
+    const prev = config
+    config = normalizeConfig(disk)
+    if (!config.version) config.version = prev.version || 3
+    learning.enabled = config.learning.enabled !== false
+  }
 }
 
 const learning = loadJson(LEARNING_PATH, { enabled: true, stats: {} })
@@ -304,6 +322,7 @@ export default {
 
     ctx.on('approval/request', async (req, next) => {
       try {
+        reloadConfig()
         const session = req.agent && req.agent.session
         if (!session) return next()
         let preset
