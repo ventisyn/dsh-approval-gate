@@ -6,10 +6,11 @@
  *
  * 设计目标：最小人工介入。人工只出现在两类场景：
  *   1. 必须人工确认：DENY 危险词、硬风险类别（deletion/credential/remote/system/bulk）
- *   2. 中立操作（neutral）：前 N-1 次人工确认，第 N 次起自动放行并沉淀为规则：
- *      批准 → 计数，确认达 N-1 次后同类操作自动放行（沉淀 {tool,mode,category} 规则）
- *      拒绝 → 升级为永久人工规则（denyRules），以后同类直接转人工
- *      取消 → 不计数（用户未表态，下次仍人工确认）
+ *   2. 中立操作（neutral）：前 N-1 次人工确认；阈值状态按「指纹命中 → flash 第三方同类验证 → 人工」分流：
+ *      指纹命中（确认样本）→ 自动放行并沉淀规则（{tool,mode,category,contains}）
+ *      指纹未命中但有样本 → flash 语义判断是否与确认样本同类（SAME 放行 / DIFFERENT 人工）
+ *      无样本 / 判不同 / 验证失败 → 人工确认
+ *      拒绝 → 升级为永久人工规则（denyRules）；取消 → 不计数
  *
  * DSH 审批触发点：命令在沙箱内被拒后，模型带 sandbox_permissions 重试，
  * 触发 approval.request，reason 固定为：
@@ -173,12 +174,17 @@ const learning = loadJson(LEARNING_PATH, { enabled: true, stats: {}, history: {}
 // enabled 以 allowlist.json 的 learning 段为单一配置源（旧 learning.json 的 enabled 仅作兼容回退）
 learning.enabled = config.learning ? config.learning.enabled !== false : learning.enabled !== false
 learning.stats = learning.stats || {}
-// history：记录每个 key 最近人工确认过的操作指纹（去重，最多 10 个），
-// 沉淀时校验「本次操作指纹确实被用户确认过」，防止混合确认导致误沉淀
+// history：每个 key 最近人工确认过的操作样本（最多 10 个）：
+//   { fp: 操作指纹（路径/文件名/项目名，可空）, ctx: 操作背景和目的（justification 摘要） }
+// 供「flash 第三方同类验证」判断新操作是否与已确认样本同类。
+// 兼容旧格式：字符串数组 → { fp, ctx } 对象数组
 learning.history = learning.history || {}
 for (const k of Object.keys(learning.history)) {
   if (!Array.isArray(learning.history[k])) learning.history[k] = []
-  learning.history[k] = learning.history[k].slice(0, 10)
+  learning.history[k] = learning.history[k]
+    .map((s) => typeof s === 'string' ? { fp: s, ctx: s } : s)
+    .filter((s) => s && typeof s === 'object')
+    .slice(-10)
 }
 
 function looksDeny(text) {
@@ -278,26 +284,18 @@ export default {
     }
 
     /**
-     * 单次 flash 判定：输出 SAFE 或 RISKY:<category>。
-     * signal 可取消（超时 abort）；异常/超时向上抛，由调用方决定重试或转人工。
-     * @returns {Promise<{verdict:'safe'|'risky', category?:string}>}
+     * 底层 flash 调用：流式请求并累积文本输出（可取消）。
+     * 由 judgeOnce / verifySimilarity 共用；异常向上抛，由 withRetry 决定重试或降级。
+     * @returns {Promise<string>} 模型原始输出文本
      */
-    const judgeOnce = async (toolName, mode, justification, signal) => {
+    const callFlash = async (userText, systemPrompt, signal) => {
       const { provider, model } = resolveModel()
-      const user = [
-        `工具: ${toolName}`,
-        `目标沙箱模式: ${mode || '(非越界审批)'}`,
-        `操作理由: ${justification || '(无说明)'}`,
-        '',
-        '请判断：执行该操作是否会造成无法回补的后果或触碰敏感资源？输出 SAFE 或 RISKY:<类别>。'
-      ].join('\n')
-
       let text = ''
       for await (const chunk of llm.stream({
         provider,
         model,
-        messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
-        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+        system: systemPrompt,
         temperature: 0,
         reasoningEffort: 'off',
         maxTokens: 64,
@@ -307,9 +305,25 @@ export default {
         else if (chunk.type === 'reasoning-delta') text += chunk.text
         else if (chunk.type === 'finish' && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
           const failure = chunk.reason.failure && chunk.reason.failure.message ? chunk.reason.failure.message : chunk.reason.kind
-          throw new Error('flash 判断调用失败: ' + failure)
+          throw new Error('flash 调用失败: ' + failure)
         }
       }
+      return text
+    }
+
+    /**
+     * 单次 flash 判定：输出 SAFE 或 RISKY:<category>。
+     * @returns {Promise<{verdict:'safe'|'risky', category?:string}>}
+     */
+    const judgeOnce = async (toolName, mode, justification, signal) => {
+      const user = [
+        `工具: ${toolName}`,
+        `目标沙箱模式: ${mode || '(非越界审批)'}`,
+        `操作理由: ${justification || '(无说明)'}`,
+        '',
+        '请判断：执行该操作是否会造成无法回补的后果或触碰敏感资源？输出 SAFE 或 RISKY:<类别>。'
+      ].join('\n')
+      const text = await callFlash(user, SYSTEM_PROMPT, signal)
       const trimmed = text.trim().toUpperCase()
       const riskyMatch = trimmed.match(/RISKY\s*[:：]\s*([A-Z_]+)/)
       if (riskyMatch) {
@@ -322,50 +336,115 @@ export default {
       throw new Error('flash 输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
     }
 
+    const SIMILARITY_PROMPT = [
+      '你是操作意图一致性判断器。用户已人工批准过一些操作（同一工具、同一沙箱模式的例行操作），现在要判断一个新请求是否属于同类。',
+      '',
+      '你将收到：',
+      '- 用户已批准的操作样本（每个样本包含操作背景和目的）',
+      '- 一个新操作的背景和目的',
+      '',
+      '判断规则：',
+      '- SAME：新操作与某个样本属于同类操作——操作对象（同一文件/目录/项目/配置/系统）或目的（同一类例行维护、同一次任务的延续）一致或高度相似',
+      '- DIFFERENT：新操作的操作对象或目的与所有样本明显不同（不同文件/不同系统/不同性质的操作）',
+      '',
+      '只输出一个词：SAME 或 DIFFERENT。拿不准时输出 DIFFERENT。不要输出任何其他内容。'
+    ].join('\n')
+
     /**
-     * flash 判定（带超时 + 1 次重试）。
-     * @returns {Promise<{verdict:'safe'|'risky', category?:string, timedOut?:boolean, failed?:boolean}>}
-     *   两次尝试均超时/失败 → 返回 { verdict:'risky', category:'neutral', timedOut:true, failed:true }
-     *   （fail-safe：按中立计数处理，不会自动放行硬风险，也不会无限重试）
+     * 单次「第三方同类验证」：把本次操作的背景和目的 + 用户历史确认样本给 flash，
+     * 判断是否属于已确认的同类操作（语义级，不依赖关键词）。
+     * @returns {Promise<{verdict:'same'|'different'}>}
      */
-    const judgeWithFlash = async (toolName, mode, justification) => {
+    const verifySimilarity = async (toolName, mode, justification, samples, signal) => {
+      const sampleLines = samples
+        .map((s, i) => `样本${i + 1}: ${s.ctx || s.fp || '(无描述)'}`)
+        .join('\n')
+      const user = [
+        `工具: ${toolName}`,
+        `目标沙箱模式: ${mode || '(非越界审批)'}`,
+        '',
+        '【用户已批准的操作样本】',
+        sampleLines || '（无样本）',
+        '',
+        '【本次新操作】',
+        `操作理由: ${justification || '(无说明)'}`,
+        '',
+        '请判断：新操作是否与某个已批准样本属于同类操作？输出 SAME 或 DIFFERENT。'
+      ].join('\n')
+      const text = await callFlash(user, SIMILARITY_PROMPT, signal)
+      const trimmed = text.trim().toUpperCase()
+      if (trimmed.includes('DIFFERENT')) return { verdict: 'different' }
+      if (trimmed.includes('SAME')) return { verdict: 'same' }
+      throw new Error('同类验证输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
+    }
+
+    /**
+     * 通用超时 + 重试包装：runFn(signal) 返回结果对象；
+     * 超时 abort 并重试 1 次，仍失败 → { failed: true }（调用方按 fail-safe 处理）。
+     * judgeOnce / verifySimilarity 共用；rejection 在 race 内消化（防 unhandled rejection）。
+     */
+    const withRetry = async (runFn, label) => {
       const timeoutMs = config.judgeTimeoutMs || 20000
       const runOnce = async () => {
         const controller = new AbortController()
         const timer = ctx.timeout(timeoutMs).then(() => {
-          controller.abort('dsh-approval-gate: flash 判断超时')
+          controller.abort(`dsh-approval-gate: ${label} 超时`)
           return 'timeout'
         })
         try {
-          // judgeOnce 的 rejection 在这里消化：race 被 timer 先 settle 后，
-          // abort 引发的流错误（ABORTED）不能变成 unhandled rejection（Node strict 模式会崩进程）
-          const judge = judgeOnce(toolName, mode, justification, controller.signal)
+          const call = runFn(controller.signal)
             .then((r) => ({ ...r, timedOut: false }))
             .catch((error) => ({ judgeError: error }))
-          const result = await Promise.race([judge, timer.then(() => ({ timedOut: true }))])
+          const result = await Promise.race([call, timer.then(() => ({ timedOut: true }))])
           if (result.judgeError) throw result.judgeError
           return result
         } finally {
-          controller.abort('dsh-approval-gate: flash 判断结束')
+          controller.abort(`dsh-approval-gate: ${label} 结束`)
         }
       }
 
       try {
         const first = await runOnce()
         if (!first.timedOut) return first
-        console.warn(`[${NAME}] flash 判断超时(${timeoutMs}ms)，重试 1 次`)
+        console.warn(`[${NAME}] ${label} 超时(${timeoutMs}ms)，重试 1 次`)
       } catch (error) {
-        console.error(`[${NAME}] flash 判断异常，重试 1 次`, error)
+        console.error(`[${NAME}] ${label} 异常，重试 1 次`, error)
       }
       try {
         const second = await runOnce()
         if (!second.timedOut) return second
       } catch (error) {
-        console.error(`[${NAME}] flash 判断重试仍异常，转人工`, error)
-        return { verdict: 'risky', category: 'neutral', timedOut: true, failed: true }
+        console.error(`[${NAME}] ${label} 重试仍异常`, error)
+        return { failed: true }
       }
-      console.warn(`[${NAME}] flash 判断两次超时(${timeoutMs}ms×2)，转人工`)
-      return { verdict: 'risky', category: 'neutral', timedOut: true, failed: true }
+      console.warn(`[${NAME}] ${label} 两次超时(${timeoutMs}ms×2)`)
+      return { failed: true }
+    }
+
+    /** flash 风险判定（带超时重试）：失败 → { verdict:'risky', category:'neutral', failed:true }（fail-safe） */
+    const judgeWithFlash = async (toolName, mode, justification) => {
+      const result = await withRetry((signal) => judgeOnce(toolName, mode, justification, signal), 'flash 判断')
+      if (result.failed) return { verdict: 'risky', category: 'neutral', timedOut: true, failed: true }
+      return result
+    }
+
+    /** 同类验证（带超时重试）：失败 → { verdict:'different', failed:true }（fail-safe：验证失败按不同类处理） */
+    const verifySimilarityWithRetry = async (toolName, mode, justification, samples) => {
+      const result = await withRetry((signal) => verifySimilarity(toolName, mode, justification, samples, signal), '同类验证')
+      if (result.failed) return { verdict: 'different', failed: true }
+      return result
+    }
+
+    /** 记录一次人工批准的样本（{fp, ctx}）；同指纹覆盖旧样本；返回本次指纹（可能为 null） */
+    const recordSample = (key, justification) => {
+      const fp = extractOperationFingerprint(justification)
+      const ctx = String(justification || '').slice(0, 200)
+      const list = (learning.history[key] || []).slice()
+      const idx = fp ? list.findIndex((s) => s.fp === fp) : -1
+      if (idx >= 0) list[idx] = { fp, ctx }
+      else list.push({ fp, ctx })
+      learning.history[key] = list.slice(-10)
+      return fp
     }
 
     ctx.on('approval/request', async (req, next) => {
@@ -452,57 +531,80 @@ export default {
 
         if (confirmed >= threshold - 1) {
           const fingerprint = extractOperationFingerprint(justification)
-          const confirmedBefore = learning.history[key] || []
-          const wasConfirmed = Boolean(fingerprint) && confirmedBefore.includes(fingerprint)
+          const samples = learning.history[key] || []
+          const fpHit = Boolean(fingerprint) && samples.some((s) => s.fp === fingerprint)
 
-          if (!wasConfirmed) {
-            // 本次操作未被确认过（混合确认/无法提取指纹）：不自动放行，转人工确认
-            audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold}（操作未确认过）→ 人工 outcome=? | ${reason.slice(0, 120)}`)
-            const outcome = await next()
-            audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
-            if (outcome === 'allowed-once' && learning.enabled) {
-              // 批准 → 记录本次指纹（下次同操作自动放行）；计数保持阈值位
-              if (fingerprint) {
-                const list = learning.history[key] || []
-                if (!list.includes(fingerprint)) {
-                  list.push(fingerprint)
-                  learning.history[key] = list.slice(-10)
-                }
-              }
-              saveJson(LEARNING_PATH, learning)
-            } else if (outcome === 'rejected') {
-              // 拒绝 → 永久人工（带指纹；提取不到则拦全部同类，拒绝从严）
-              const rule = { tool: toolName, category: cat }
+          if (fpHit) {
+            // ① 指纹确定性命中（用户确认过该操作）→ 自动放行 + 沉淀规则
+            if (learning.enabled) {
+              const rule = { tool: toolName, category: cat, contains: fingerprint }
               if (mode) rule.mode = mode
-              if (fingerprint) rule.contains = fingerprint
-              if (!config.denyRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
-                config.denyRules.push(rule)
+              if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
+                rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 人工确认后自动放行`
+                config.allowRules.push(rule)
                 saveJson(ALLOWLIST_PATH, config)
-                audit(`LEARN   ${key} 被人工拒绝，已升级永久人工 ${JSON.stringify(rule)}`)
+                audit(`LEARN   ${key} 已沉淀白名单 ${JSON.stringify(rule)}`)
               }
-              delete learning.stats[key]
-              delete learning.history[key]
-              saveJson(LEARNING_PATH, learning)
             }
-            return outcome
+            audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-learned=${confirmed + 1}/${threshold}) | ${reason.slice(0, 100)}`)
+            delete learning.stats[key]
+            delete learning.history[key]
+            saveJson(LEARNING_PATH, learning)
+            return 'allowed-once'
           }
 
-          // 本次操作确认过 → 自动放行 + 沉淀规则（带操作指纹，只放行该指纹对应的操作）
-          if (learning.enabled) {
-            const rule = { tool: toolName, category: cat, contains: fingerprint }
-            if (mode) rule.mode = mode
-            if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
-              rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 人工确认后自动放行`
-              config.allowRules.push(rule)
-              saveJson(ALLOWLIST_PATH, config)
-              audit(`LEARN   ${key} 已沉淀白名单 ${JSON.stringify(rule)}`)
+          if (samples.length > 0) {
+            // 指纹未命中 → flash 第三方同类验证：把本次操作背景 + 用户确认样本给 flash，
+            // 语义判断是否属于已确认的同类操作（不依赖关键词）
+            const sim = await verifySimilarityWithRetry(toolName, mode, justification, samples)
+            if (sim.verdict === 'same') {
+              // 判同类 → 自动放行；有指纹则沉淀规则（无指纹不沉淀，保留样本供后续验证）
+              if (learning.enabled && fingerprint) {
+                const rule = { tool: toolName, category: cat, contains: fingerprint }
+                if (mode) rule.mode = mode
+                if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
+                  rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} flash 同类验证`
+                  config.allowRules.push(rule)
+                  saveJson(ALLOWLIST_PATH, config)
+                  audit(`LEARN   ${key} flash 判同类，已沉淀白名单 ${JSON.stringify(rule)}`)
+                }
+                delete learning.stats[key]
+                delete learning.history[key]
+                saveJson(LEARNING_PATH, learning)
+              } else {
+                // 无指纹：不沉淀，保留样本与阈值位（下次同操作仍靠 flash 验证放行）
+                audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（无指纹，未沉淀）| ${reason.slice(0, 100)}`)
+              }
+              audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
+              return 'allowed-once'
             }
+            // 判 DIFFERENT / 验证失败 → 落人工确认
+            audit(`SIMDIFF ${toolName} mode=${mode || 'none'} category=${cat} flash 判不同类 → 人工 | ${reason.slice(0, 120)}`)
           }
-          audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-learned=${confirmed + 1}/${threshold}) | ${reason.slice(0, 100)}`)
-          delete learning.stats[key]
-          delete learning.history[key]
-          saveJson(LEARNING_PATH, learning)
-          return 'allowed-once'
+
+          // 指纹未命中（且无样本可验证 / 判不同类）：转人工确认
+          audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold}（操作未确认过）→ 人工 outcome=? | ${reason.slice(0, 120)}`)
+          const outcome = await next()
+          audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
+          if (outcome === 'allowed-once' && learning.enabled) {
+            // 批准 → 记录本次操作样本（背景+指纹）；计数保持阈值位
+            recordSample(key, justification)
+            saveJson(LEARNING_PATH, learning)
+          } else if (outcome === 'rejected') {
+            // 拒绝 → 永久人工（带指纹；提取不到则拦全部同类，拒绝从严）
+            const rule = { tool: toolName, category: cat }
+            if (mode) rule.mode = mode
+            if (fingerprint) rule.contains = fingerprint
+            if (!config.denyRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
+              config.denyRules.push(rule)
+              saveJson(ALLOWLIST_PATH, config)
+              audit(`LEARN   ${key} 被人工拒绝，已升级永久人工 ${JSON.stringify(rule)}`)
+            }
+            delete learning.stats[key]
+            delete learning.history[key]
+            saveJson(LEARNING_PATH, learning)
+          }
+          return outcome
         }
 
         // 前 N-1 次 → 人工确认
@@ -511,16 +613,9 @@ export default {
         audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
 
         if (outcome === 'allowed-once' && learning.enabled) {
-          // 批准 → 确认计数 +1，并记录本次操作指纹（未达阈值，下次同类仍人工确认）
+          // 批准 → 确认计数 +1，并记录本次操作样本（未达阈值，下次同类仍人工确认）
           learning.stats[key] = confirmed + 1
-          const fingerprint = extractOperationFingerprint(justification)
-          if (fingerprint) {
-            const list = learning.history[key] || []
-            if (!list.includes(fingerprint)) {
-              list.push(fingerprint)
-              learning.history[key] = list.slice(-10)
-            }
-          }
+          recordSample(key, justification)
           saveJson(LEARNING_PATH, learning)
         } else if (outcome === 'rejected') {
           // 拒绝 → 升级为永久人工规则（带操作指纹；提取不到则拦全部同类，拒绝从严）
