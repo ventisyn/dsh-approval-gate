@@ -266,5 +266,10 @@ window.__ModuleLoader__.load({
         })
       },
     }
+
+    exports.default = plugin
+    exports.apply = plugin.apply
+    exports.inject = plugin.inject
+    return module.exports
   },
 })
