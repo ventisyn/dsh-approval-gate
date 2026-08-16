@@ -40,6 +40,57 @@ const DATA_DIR = join(DSH_HOME, 'auto-approve')
 const ALLOWLIST_PATH = join(DATA_DIR, 'allowlist.json')
 const LEARNING_PATH = join(DATA_DIR, 'learning.json')
 const AUDIT_PATH = join(DATA_DIR, 'audit.log')
+const EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
+
+// 自动放行事件序号（进程内递增，重启后从现有文件恢复，避免与历史重复）
+let eventSeq = 0
+try {
+  const existing = readFileSync(EVENTS_PATH, 'utf8')
+  for (const line of existing.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const ev = JSON.parse(line)
+      if (Number.isInteger(ev.id) && ev.id > eventSeq) eventSeq = ev.id
+    } catch { /* 跳过坏行 */ }
+  }
+} catch { /* 文件不存在：从 0 开始 */ }
+
+/** 从 justification 提取涉及的文件/路径（供审查界面展示） */
+function extractFiles(text) {
+  const s = String(text || '')
+  const found = []
+  const seen = new Set()
+  const add = (v) => {
+    const seg = v.replace(/[，。；、,.;:：\s]+$/g, '').trim()
+    if (seg.length >= 3 && seg.length <= 120 && !seen.has(seg)) { seen.add(seg); found.push(seg) }
+  }
+  for (const m of s.matchAll(/(?:~\/|\/|\.\/)?[\w@.-]+\/[\w@.\/-]+/g)) add(m[0])
+  for (const m of s.matchAll(/[\w@.-]+\.(?:md|js|json|ya?ml|env|txt|py|ts|css|html|log|mjs|cjs)/gi)) add(m[0])
+  return found.slice(0, 8)
+}
+
+/** 记录一次自动放行事件（结构化，供 client 审查界面轮询展示） */
+function recordAutoAllow(sessionId, toolName, mode, reason, justification, verdict) {
+  eventSeq += 1
+  const ev = {
+    id: eventSeq,
+    ts: new Date().toISOString(),
+    sessionId: String(sessionId || ''),
+    tool: String(toolName || 'unknown'),
+    mode: String(mode || ''),
+    reason: String(reason || '').slice(0, 600),
+    justification: String(justification || '').slice(0, 400),
+    verdict: String(verdict || 'auto'),
+    files: extractFiles(justification)
+  }
+  try {
+    ensureDataDir()
+    appendFileSync(EVENTS_PATH, JSON.stringify(ev) + '\n', 'utf8')
+  } catch (error) {
+    console.error(`[${NAME}] 记录自动放行事件失败`, error)
+  }
+  return ev
+}
 
 // 不可逆危险操作（deny 层，命中即转人工，优先级最高）
 const DEFAULT_DENY_KEYWORDS = [
@@ -262,12 +313,52 @@ function extractOperationFingerprint(text) {
 
 export default {
   name: NAME,
-  inject: ['llm', 'approval', 'permissionPresets', 'agentDefaultModel', 'timer'],
+  inject: ['llm', 'approval', 'permissionPresets', 'agentDefaultModel', 'timer', 'webServer'],
   apply(ctx) {
     const llm = ctx.llm
     const permissionPresets = ctx.permissionPresets
     const agentDefaultModel = ctx.get('agentDefaultModel')
     const PRESET_NAME = 'auto-approve'
+
+    // ---- 自动放行事件 API（client 审查界面轮询；按会话过滤 + since 增量） ----
+    let offEventsRoute = null
+    try {
+      if (ctx.webServer && typeof ctx.webServer.register === 'function') {
+        offEventsRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/events',
+          handler: async (req, res) => {
+            if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return }
+            const url = new URL(req.url, 'http://localhost')
+            const sessionId = url.searchParams.get('sessionId') || ''
+            const since = Number.parseInt(url.searchParams.get('since') || '0', 10) || 0
+            const events = []
+            try {
+              const text = readFileSync(EVENTS_PATH, 'utf8')
+              for (const line of text.split('\n')) {
+                if (!line.trim()) continue
+                try {
+                  const ev = JSON.parse(line)
+                  if (!Number.isInteger(ev.id) || ev.id <= since) continue
+                  if (sessionId && ev.sessionId !== sessionId) continue
+                  events.push(ev)
+                } catch { /* 跳过坏行 */ }
+              }
+            } catch { /* events 文件不存在：返回空 */ }
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
+            res.end(JSON.stringify({ events }))
+          },
+        })
+        console.log(`[${NAME}] 事件 API 已注册：/api/auto-approve/events`)
+      } else {
+        console.warn(`[${NAME}] webServer 不可用，审查事件 API 未注册`)
+      }
+    } catch (error) {
+      console.error(`[${NAME}] 注册事件 API 失败`, error)
+    }
+    ctx.effect(() => () => {
+      if (offEventsRoute) { try { offEventsRoute() } catch (e) {} }
+    })
 
     const resolveModel = () => {
       try {
@@ -465,6 +556,7 @@ export default {
         const toolName = String(req.toolName || 'unknown')
         const reason = String(req.reason || '')
         const { mode, justification } = parseReason(reason)
+        const sessionId = typeof session.id === 'string' ? session.id : ''
 
         // 1. DENY 层：不可逆危险词 → 转人工（fail-safe，最高优先）
         if (looksDeny(toolName + ' ' + reason)) {
@@ -476,6 +568,7 @@ export default {
         const matchedRule = matchRule(config.allowRules, toolName, mode, null, justification)
         if (matchedRule) {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${matchedRule.description || 'matched'})`)
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'rule')
           return 'allowed-once'
         }
 
@@ -484,6 +577,7 @@ export default {
 
         if (verdict === 'safe') {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-safe${timedOut ? '，重试后' : ''})`)
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-safe')
           return 'allowed-once'
         }
 
@@ -521,6 +615,7 @@ export default {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${learnedRule.description || '沉淀规则'})`)
           delete learning.stats[key]
           saveJson(LEARNING_PATH, learning)
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'learned')
           return 'allowed-once'
         }
 
@@ -550,6 +645,7 @@ export default {
             delete learning.stats[key]
             delete learning.history[key]
             saveJson(LEARNING_PATH, learning)
+            recordAutoAllow(sessionId, toolName, mode, reason, justification, 'fpHit')
             return 'allowed-once'
           }
 
@@ -576,6 +672,7 @@ export default {
                 audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（无指纹，未沉淀）| ${reason.slice(0, 100)}`)
               }
               audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
+              recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same')
               return 'allowed-once'
             }
             // 判 DIFFERENT / 验证失败 → 落人工确认
