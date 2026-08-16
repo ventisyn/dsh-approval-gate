@@ -169,10 +169,17 @@ function reloadConfig() {
   }
 }
 
-const learning = loadJson(LEARNING_PATH, { enabled: true, stats: {} })
+const learning = loadJson(LEARNING_PATH, { enabled: true, stats: {}, history: {} })
 // enabled 以 allowlist.json 的 learning 段为单一配置源（旧 learning.json 的 enabled 仅作兼容回退）
 learning.enabled = config.learning ? config.learning.enabled !== false : learning.enabled !== false
 learning.stats = learning.stats || {}
+// history：记录每个 key 最近人工确认过的操作指纹（去重，最多 10 个），
+// 沉淀时校验「本次操作指纹确实被用户确认过」，防止混合确认导致误沉淀
+learning.history = learning.history || {}
+for (const k of Object.keys(learning.history)) {
+  if (!Array.isArray(learning.history[k])) learning.history[k] = []
+  learning.history[k] = learning.history[k].slice(0, 10)
+}
 
 function looksDeny(text) {
   const lower = String(text || '').toLowerCase()
@@ -204,6 +211,47 @@ function matchRule(rules, toolName, mode, category, justification) {
 // 计数/学习 key：tool|mode|category（category 为 flash 判定的类别，neutral 走计数）
 function learnKey(toolName, mode, category) {
   return `${toolName}|${mode || 'none'}|${category || 'none'}`
+}
+
+// 从 justification 提取「操作指纹」：路径 / 文件名 / 项目名等有区分度的片段。
+// 沉淀/拒绝规则必须携带指纹，避免宽规则（如 edit+danger 放行所有工作区外编辑）
+// 误放行用户未确认过的其他操作。提取不到 → 返回 null（调用方决定不沉淀）。
+const GENERIC_EN_WORDS = new Set([
+  'update', 'updates', 'updating', 'updated', 'install', 'installs', 'installing',
+  'deploy', 'deploys', 'deploying', 'sync', 'syncing', 'copy', 'copies', 'move',
+  'remove', 'removes', 'adding', 'change', 'changes', 'changing', 'set', 'clean',
+  'test', 'verify', 'check', 'fix', 'fixes', 'fixing', 'modify', 'modifies'
+])
+function extractOperationFingerprint(text) {
+  const s = String(text || '')
+  const candidates = []
+  // 1. 显式路径片段：~/xxx、/xxx/yyy、相对路径（含至少一段目录或文件名）
+  for (const m of s.matchAll(/(?:~\/|\/|\.\/)?[\w@.-]+\/[\w@.\/-]+/g)) {
+    const seg = m[0].replace(/[，。；、,.;:：\s]+$/g, '').trim()
+    if (seg.length >= 5 && seg.length <= 80) candidates.push(seg)
+  }
+  // 2. 带扩展名的文件名：xxx.md/.js/.json/.yml/.env 等
+  for (const m of s.matchAll(/[\w@.-]+\.(?:md|js|json|ya?ml|env|txt|py|ts|css|html|log|mjs|cjs)/gi)) {
+    const seg = m[0]
+    if (seg.length >= 4 && seg.length <= 60) candidates.push(seg)
+  }
+  // 3. 连字符/点分隔的项目或插件名（2-4 段英文标识符）
+  for (const m of s.matchAll(/\b[a-z][\w-]*(?:[-.][a-z][\w-]*){1,3}\b/gi)) {
+    const seg = m[0]
+    if (seg.length >= 6 && seg.length <= 50 && !/^(workspace-write|danger-full-access)$/i.test(seg)) {
+      candidates.push(seg)
+    }
+  }
+  // 4. 单段英文标识符（≥5 字符，排除通用动词/操作词）：README、config 等文档/配置名
+  for (const m of s.matchAll(/\b[a-z][a-z0-9-]{4,}\b/gi)) {
+    const seg = m[0]
+    if (GENERIC_EN_WORDS.has(seg.toLowerCase())) continue
+    if (seg.length <= 40) candidates.push(seg)
+  }
+  if (candidates.length === 0) return null
+  // 取最长片段（最长最有区分度），截断防超长
+  candidates.sort((a, b) => b.length - a.length)
+  return candidates[0].slice(0, 60)
 }
 
 export default {
@@ -403,19 +451,56 @@ export default {
         const confirmed = learning.stats[key] || 0
 
         if (confirmed >= threshold - 1) {
-          // 已确认 N-1 次 → 第 N 次自动放行 + 沉淀规则
+          const fingerprint = extractOperationFingerprint(justification)
+          const confirmedBefore = learning.history[key] || []
+          const wasConfirmed = Boolean(fingerprint) && confirmedBefore.includes(fingerprint)
+
+          if (!wasConfirmed) {
+            // 本次操作未被确认过（混合确认/无法提取指纹）：不自动放行，转人工确认
+            audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold}（操作未确认过）→ 人工 outcome=? | ${reason.slice(0, 120)}`)
+            const outcome = await next()
+            audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
+            if (outcome === 'allowed-once' && learning.enabled) {
+              // 批准 → 记录本次指纹（下次同操作自动放行）；计数保持阈值位
+              if (fingerprint) {
+                const list = learning.history[key] || []
+                if (!list.includes(fingerprint)) {
+                  list.push(fingerprint)
+                  learning.history[key] = list.slice(-10)
+                }
+              }
+              saveJson(LEARNING_PATH, learning)
+            } else if (outcome === 'rejected') {
+              // 拒绝 → 永久人工（带指纹；提取不到则拦全部同类，拒绝从严）
+              const rule = { tool: toolName, category: cat }
+              if (mode) rule.mode = mode
+              if (fingerprint) rule.contains = fingerprint
+              if (!config.denyRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
+                config.denyRules.push(rule)
+                saveJson(ALLOWLIST_PATH, config)
+                audit(`LEARN   ${key} 被人工拒绝，已升级永久人工 ${JSON.stringify(rule)}`)
+              }
+              delete learning.stats[key]
+              delete learning.history[key]
+              saveJson(LEARNING_PATH, learning)
+            }
+            return outcome
+          }
+
+          // 本次操作确认过 → 自动放行 + 沉淀规则（带操作指纹，只放行该指纹对应的操作）
           if (learning.enabled) {
-            const rule = { tool: toolName, category: cat }
+            const rule = { tool: toolName, category: cat, contains: fingerprint }
             if (mode) rule.mode = mode
-            if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category)) {
-              rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 连续人工确认 ${threshold - 1} 次`
+            if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
+              rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 人工确认后自动放行`
               config.allowRules.push(rule)
               saveJson(ALLOWLIST_PATH, config)
-              audit(`LEARN   ${key} 人工确认 ${confirmed} 次达阈值，已沉淀白名单 ${JSON.stringify(rule)}`)
+              audit(`LEARN   ${key} 已沉淀白名单 ${JSON.stringify(rule)}`)
             }
           }
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (neutral-learned=${confirmed + 1}/${threshold}) | ${reason.slice(0, 100)}`)
           delete learning.stats[key]
+          delete learning.history[key]
           saveJson(LEARNING_PATH, learning)
           return 'allowed-once'
         }
@@ -426,19 +511,30 @@ export default {
         audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
 
         if (outcome === 'allowed-once' && learning.enabled) {
-          // 批准 → 确认计数 +1（未达阈值，下次同类仍人工确认）
+          // 批准 → 确认计数 +1，并记录本次操作指纹（未达阈值，下次同类仍人工确认）
           learning.stats[key] = confirmed + 1
+          const fingerprint = extractOperationFingerprint(justification)
+          if (fingerprint) {
+            const list = learning.history[key] || []
+            if (!list.includes(fingerprint)) {
+              list.push(fingerprint)
+              learning.history[key] = list.slice(-10)
+            }
+          }
           saveJson(LEARNING_PATH, learning)
         } else if (outcome === 'rejected') {
-          // 拒绝 → 升级为永久人工规则
+          // 拒绝 → 升级为永久人工规则（带操作指纹；提取不到则拦全部同类，拒绝从严）
+          const fingerprint = extractOperationFingerprint(justification)
           const rule = { tool: toolName, category: cat }
           if (mode) rule.mode = mode
-          if (!config.denyRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category)) {
+          if (fingerprint) rule.contains = fingerprint
+          if (!config.denyRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
             config.denyRules.push(rule)
             saveJson(ALLOWLIST_PATH, config)
             audit(`LEARN   ${key} 被人工拒绝，已升级永久人工 ${JSON.stringify(rule)}`)
           }
           delete learning.stats[key]
+          delete learning.history[key]
           saveJson(LEARNING_PATH, learning)
         }
         // cancelled/unavailable：不计数（用户未表态，下次仍人工确认）
