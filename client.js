@@ -170,7 +170,7 @@ window.__ModuleLoader__.load({
         const load = function () {
           fetchEvents(sessionId, 0).then(function (evs) {
             if (!alive) return
-            evs.sort(function (a, b) { return a.id - b.id })
+            evs.sort(function (a, b) { return b.id - a.id }) // 时间倒序：最新在最上面
             setEvents(evs)
             setError(null)
           }).catch(function (e) {

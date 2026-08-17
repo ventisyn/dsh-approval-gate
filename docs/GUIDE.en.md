@@ -111,7 +111,7 @@ Select **"Auto Approval (Flash)"** in the session's permission dropdown (`/permi
 Two review entry points appear whenever a command is auto-approved (strict DSH design language, `--dsw-alias-*` tokens):
 
 1. **✅ Live notice strip**: a dedicated row above the composer (`conversation.input.dock`, order=30, below todo/goal/queue, does not scroll with the conversation). A green ✅ notice appears on auto-approval: tool + operation summary + verdict label (allowlist / flash-safe / learned / confirmed / flash-same), auto-dismisses after 8s, closable manually; takes zero space when idle
-2. **"Approval" history view**: the tab to the right of "Trajectory" in the session view switcher (`conversation.view`, order=20). Shows the **current session's** auto-approval timeline: ✅ + time + tool + justification + involved-file chips + verdict badge
+2. **"Approval" history view**: the tab to the right of "Trajectory" in the session view switcher (`conversation.view`, order=20). Shows the **current session's** auto-approval timeline (**newest first**): ✅ + time + tool + justification + involved-file chips + verdict badge
 
 Data flow: the host appends a structured event to `~/.dsh/auto-approve/events.jsonl` on every auto-approval (`sessionId`/`tool`/`mode`/`reason`/`justification`/`verdict`/`files`); the browser polls `GET /api/auto-approve/events?sessionId=&since=` (2s incremental / 5s full refresh in the view).
 

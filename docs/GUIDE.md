@@ -111,7 +111,7 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 每次命令被自动放行时，提供两处审查入口（严格按 DSH 设计语言，`--dsw-alias-*` tokens）：
 
 1. **✅ 实时提示条**：输入框上方独立一行（`conversation.input.dock`，order=30，排在 todo/goal/queue 之下、不随流式对话滚动）。自动放行时出现绿色 ✅ 提示：工具 + 操作摘要 + 判定路径标签（白名单规则 / Flash 判定安全 / 沉淀规则 / 已确认操作 / Flash 同类验证），8 秒自动收起，可手动关闭；无事件时完全不占位
-2. **「审批」历史视图**：会话视图切换条「轨迹」右侧的「审批」tab（`conversation.view`，order=20）。展示**当前会话**所有自动放行动作的时间线：✅ + 时间 + 工具 + 原因（justification）+ 涉及文件标签 + 判定路径徽标
+2. **「审批」历史视图**：会话视图切换条「轨迹」右侧的「审批」tab（`conversation.view`，order=20）。展示**当前会话**所有自动放行动作的时间线（**最新在最上面**）：✅ + 时间 + 工具 + 原因（justification）+ 涉及文件标签 + 判定路径徽标
 
 数据链路：host 每次自动放行时追加结构化事件到 `~/.dsh/auto-approve/events.jsonl`（含 `sessionId`/`tool`/`mode`/`reason`/`justification`/`verdict`/`files`），浏览器通过 `GET /api/auto-approve/events?sessionId=&since=` 轮询（2s 增量 / 视图 5s 全量）。
 
