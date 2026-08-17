@@ -106,6 +106,20 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 
 在会话的权限下拉（`/permission` 弹窗或设置页）选中**「自动审批（Flash）」**，该会话即启用自动审批；其他会话不受影响（按会话预设门控）。
 
+## 设置页（v0.4.1+）
+
+DSH 设置面板新增「自动审批」分区（settings.section），提供可视化规则管理：
+
+- **初始化卡片**：检测 `cordis.patch.yml` 是否已含 auto-approve 权限预设；未配置时点「一键配置」自动写入（文本级修改，保留注释格式），重启后生效
+- **管道总览**：当前判定管道说明 + 生效的硬风险类别徽标
+- **黑名单**（denyKeywords）：查看/添加/删除危险词（删除预置词有确认提示）
+- **白名单**（allowRules）：查看（标注 预置/学习沉淀/用户 来源）/添加（tool/mode/category/contains 表单）/删除 —— 例：添加 `tool=edit, mode=danger-full-access` 后所有工作区外 edit 自动放行
+- **永久人工**（denyRules）：查看/移除（拒绝升级的规则）
+- **学习状态**：确认计数（stats）+ 已确认样本（history）
+- **阈值与超时**：`riskyThreshold` / `judgeTimeoutMs` 直接修改
+
+所有修改通过 `POST /api/auto-approve/rules` 写入 `allowlist.json`，**热更新即时生效**（无需重启）；`POST /api/auto-approve/setup` 负责一键初始化。
+
 ## 人工审查 UI（v0.4.0+）
 
 每次命令被自动放行时，提供两处审查入口（严格按 DSH 设计语言，`--dsw-alias-*` tokens）：

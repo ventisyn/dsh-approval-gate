@@ -41,6 +41,32 @@ const ALLOWLIST_PATH = join(DATA_DIR, 'allowlist.json')
 const LEARNING_PATH = join(DATA_DIR, 'learning.json')
 const AUDIT_PATH = join(DATA_DIR, 'audit.log')
 const EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
+const PROFILE_PATCH_PATH = join(DSH_HOME, 'profiles', 'web', 'cordis.patch.yml')
+
+// auto-approve 权限预设（一键初始化时写入 cordis.patch.yml 的 permission 条目）
+const AUTO_APPROVE_PRESET_YAML = `      auto-approve:
+        sandbox: workspace-write
+        approval: ask
+        name: 自动审批（Flash）
+        description: Flash 预判写入/命令是否不可回补：安全自动批准，有风险转人工审批。
+`
+// 无 permission 条目时追加的完整预设块
+const FULL_PERMISSION_BLOCK = `
+# ── 自动审批模式（dsh-approval-gate）─────────────────────────
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+`
 
 // 自动放行事件序号（进程内递增，重启后从现有文件恢复，避免与历史重复）
 let eventSeq = 0
@@ -109,6 +135,163 @@ const DEFAULT_ALLOW_RULES = [
 
 // 硬风险类别：flash 判 RISKY 且命中这些类别 → 直接转人工（不计数、不学习、永远人工）
 const DEFAULT_HARD_CATEGORIES = ['deletion', 'credential', 'remote', 'system', 'bulk']
+
+// ---- 规则管理 API 辅助 ----
+
+/** 读取请求体 JSON（参考 dsh-vision-paste 的 POST 处理） */
+function readBody(req, limit = 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    req.on('data', (chunk) => {
+      body += chunk
+      if (body.length > limit) { req.destroy(new Error('payload too large')); reject(new Error('payload too large')) }
+    })
+    req.on('error', (err) => reject(err))
+    req.on('end', () => {
+      try { resolve(body ? JSON.parse(body) : {}) } catch (e) { reject(e) }
+    })
+  })
+}
+
+/** 配置快照（供设置页展示；区分预置默认值与当前值） */
+function getRulesSnapshot() {
+  reloadConfig()
+  return {
+    config: {
+      version: config.version || 3,
+      denyKeywords: config.denyKeywords || [],
+      allowRules: config.allowRules || [],
+      denyRules: config.denyRules || [],
+      hardCategories: config.hardCategories || [],
+      riskyThreshold: config.riskyThreshold || 3,
+      judgeTimeoutMs: config.judgeTimeoutMs || 20000,
+      learning: { enabled: learning.enabled !== false }
+    },
+    learning: {
+      stats: learning.stats || {},
+      history: learning.history || {}
+    },
+    predefined: {
+      denyKeywords: DEFAULT_DENY_KEYWORDS,
+      allowRules: DEFAULT_ALLOW_RULES,
+      hardCategories: DEFAULT_HARD_CATEGORIES
+    },
+    setup: getSetupState()
+  }
+}
+
+/** 检查权限预设是否已配置（供设置页初始化卡片） */
+function getSetupState() {
+  try {
+    const text = readFileSync(PROFILE_PATCH_PATH, 'utf8')
+    return { configured: text.includes('auto-approve:'), patchPath: PROFILE_PATCH_PATH }
+  } catch (e) {
+    return { configured: false, patchPath: PROFILE_PATCH_PATH, error: String((e && e.message) || e) }
+  }
+}
+
+/** 一键初始化：在 cordis.patch.yml 中写入 auto-approve 权限预设（文本级操作，保留注释格式） */
+function ensureAutoApprovePreset() {
+  try {
+    const text = readFileSync(PROFILE_PATCH_PATH, 'utf8')
+    if (text.includes('auto-approve:')) return { ok: true, status: 'already', needRestart: false }
+
+    const lines = text.split('\n')
+    let permIdx = -1
+    for (let i = 0; i < lines.length; i++) {
+      if (/^- id:\s*permission\s*$/.test(lines[i])) { permIdx = i; break }
+    }
+
+    if (permIdx === -1) {
+      // 无 permission 条目：追加完整预设块
+      const next = text.replace(/\s*$/, '') + FULL_PERMISSION_BLOCK + AUTO_APPROVE_PRESET_YAML
+      writeFileSync(PROFILE_PATCH_PATH, next, 'utf8')
+      return { ok: true, status: 'added-entry', needRestart: true }
+    }
+
+    // 有 permission 条目：在其 presets 块末尾插入 auto-approve
+    // presets 子项缩进 6；找到 presets: 后的最后一个缩进 ≥6 的连续行，在其后插入
+    let presetsIdx = -1
+    for (let i = permIdx; i < lines.length; i++) {
+      if (/^ {4}presets:\s*$/.test(lines[i])) { presetsIdx = i; break }
+      if (i > permIdx && /^- /.test(lines[i]) && !/^ {2,}- /.test(lines[i])) break // 下一个顶层条目
+    }
+    if (presetsIdx === -1) {
+      // permission 条目存在但没有 presets 键：在 config 下补 presets（简化处理）
+      return { ok: false, status: 'no-presets-key', needRestart: false, error: 'permission 条目缺少 presets 键，请手动添加' }
+    }
+    // 从 presetsIdx 往下找最后一个 presets 子项行（缩进 6 且非注释空行），直到顶层条目/文件尾
+    let insertAt = presetsIdx
+    for (let i = presetsIdx + 1; i < lines.length; i++) {
+      const line = lines[i]
+      if (/^ {6}\S/.test(line) || /^ {8}\S/.test(line)) { insertAt = i; continue }
+      if (/^ {0,4}\S/.test(line) && !/^ {6,}\S/.test(line)) break // 缩进 <6 的非空行 = 离开 presets 区
+      if (/^\s*$/.test(line)) continue
+    }
+    lines.splice(insertAt + 1, 0, AUTO_APPROVE_PRESET_YAML.replace(/\n$/, ''))
+    writeFileSync(PROFILE_PATCH_PATH, lines.join('\n'), 'utf8')
+    return { ok: true, status: 'added-preset', needRestart: true }
+  } catch (e) {
+    return { ok: false, status: 'error', needRestart: false, error: String((e && e.message) || e) }
+  }
+}
+
+/** 规则修改：op=add|remove|set，kind=allowRules|denyRules|denyKeywords|hardCategories|riskyThreshold|judgeTimeoutMs */
+function applyRuleOp(op, kind, value) {
+  reloadConfig()
+
+  // 数值类配置（阈值/超时）
+  if (kind === 'riskyThreshold' || kind === 'judgeTimeoutMs') {
+    if (op !== 'set') return { ok: false, error: `${kind} 使用 set 操作` }
+    const n = Number(value)
+    if (!Number.isFinite(n) || n <= 0) return { ok: false, error: '无效数值' }
+    config[kind] = n
+    saveJson(ALLOWLIST_PATH, config)
+    audit(`CONFIG  ${kind} → ${n}`)
+    return { ok: true, set: true, value: n }
+  }
+
+  const list = config[kind]
+  if (!Array.isArray(list)) return { ok: false, error: `未知规则类型: ${kind}` }
+
+  if (op === 'add') {
+    if (kind === 'denyKeywords' || kind === 'hardCategories') {
+      const str = String(value || '').trim()
+      if (!str) return { ok: false, error: '值不能为空' }
+      if (!list.includes(str)) list.push(str)
+    } else {
+      if (!value || typeof value !== 'object') return { ok: false, error: '规则必须是对象' }
+      const hasAny = value.tool || value.mode || value.category || value.contains
+      if (!hasAny) return { ok: false, error: '规则至少需要 tool/mode/category/contains 之一' }
+      const dup = list.some((r) => r && r.tool === value.tool && r.mode === value.mode && r.category === value.category && r.contains === value.contains)
+      if (!dup) {
+        if (!value.description) value.description = '用户自定义'
+        list.push(value)
+      }
+    }
+    saveJson(ALLOWLIST_PATH, config)
+    return { ok: true, added: true }
+  }
+
+  if (op === 'remove') {
+    const before = list.length
+    if (kind === 'denyKeywords' || kind === 'hardCategories') {
+      const str = String(value || '').trim()
+      for (let i = list.length - 1; i >= 0; i--) if (String(list[i]) === str) list.splice(i, 1)
+    } else {
+      const v = value || {}
+      for (let i = list.length - 1; i >= 0; i--) {
+        const r = list[i] || {}
+        if (r.tool === v.tool && r.mode === v.mode && r.category === v.category && r.contains === v.contains) list.splice(i, 1)
+      }
+    }
+    if (list.length === before) return { ok: false, error: '未找到匹配的规则' }
+    saveJson(ALLOWLIST_PATH, config)
+    return { ok: true, removed: true }
+  }
+
+  return { ok: false, error: `未知操作: ${op}` }
+}
 
 const CATEGORY_LABELS = {
   deletion: '删除/覆盖不可再生数据',
@@ -356,8 +539,69 @@ export default {
     } catch (error) {
       console.error(`[${NAME}] 注册事件 API 失败`, error)
     }
+
+    // ---- 规则管理 API（设置页：查看/修改放行与阻塞规则 + 一键初始化） ----
+    let offRulesRoute = null
+    let offSetupRoute = null
+    try {
+      if (ctx.webServer && typeof ctx.webServer.register === 'function') {
+        offRulesRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/rules',
+          handler: async (req, res) => {
+            const send = (code, obj) => {
+              res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
+              res.end(JSON.stringify(obj))
+            }
+            try {
+              if (req.method === 'GET' || req.method === 'HEAD') {
+                return send(200, getRulesSnapshot())
+              }
+              if (req.method === 'POST') {
+                const body = await readBody(req)
+                const op = String(body.op || '')
+                const kind = String(body.kind || '')
+                const result = applyRuleOp(op, kind, body.value)
+                return send(result.ok ? 200 : 400, result)
+              }
+              return send(405, { ok: false, error: 'method not allowed' })
+            } catch (e) {
+              send(400, { ok: false, error: String((e && e.message) || e) })
+            }
+          },
+        })
+        offSetupRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/setup',
+          handler: async (req, res) => {
+            const send = (code, obj) => {
+              res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
+              res.end(JSON.stringify(obj))
+            }
+            try {
+              if (req.method === 'GET' || req.method === 'HEAD') {
+                return send(200, getSetupState())
+              }
+              if (req.method === 'POST') {
+                return send(200, ensureAutoApprovePreset())
+              }
+              return send(405, { ok: false, error: 'method not allowed' })
+            } catch (e) {
+              send(400, { ok: false, error: String((e && e.message) || e) })
+            }
+          },
+        })
+        console.log(`[${NAME}] 规则/初始化 API 已注册：/api/auto-approve/rules, /setup`)
+      } else {
+        console.warn(`[${NAME}] webServer 不可用，规则/初始化 API 未注册`)
+      }
+    } catch (error) {
+      console.error(`[${NAME}] 注册规则/初始化 API 失败`, error)
+    }
     ctx.effect(() => () => {
       if (offEventsRoute) { try { offEventsRoute() } catch (e) {} }
+      if (offRulesRoute) { try { offRulesRoute() } catch (e) {} }
+      if (offSetupRoute) { try { offSetupRoute() } catch (e) {} }
     })
 
     const resolveModel = () => {

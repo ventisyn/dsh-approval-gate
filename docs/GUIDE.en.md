@@ -106,6 +106,20 @@ Data files live under `$DSH_HOME/auto-approve/` (default `~/.dsh/auto-approve/`)
 
 Select **"Auto Approval (Flash)"** in the session's permission dropdown (`/permission` dialog or settings). Other sessions are unaffected (gated per session preset).
 
+## Settings Page (v0.4.1+)
+
+A new "Auto Approval" section in the DSH settings panel (`settings.section`) provides visual rule management:
+
+- **Setup card**: detects whether the `auto-approve` permission preset exists in `cordis.patch.yml`; if missing, click "Configure" to write it automatically (text-level edit, comments preserved), effective after restart
+- **Pipeline overview**: current judgment pipeline description + active hard-risk category badges
+- **Deny list** (`denyKeywords`): view/add/remove dangerous keywords (removing a predefined keyword asks for confirmation)
+- **Allow list** (`allowRules`): view (tagged predefined / learned / user) / add (tool/mode/category/contains form) / remove — e.g. add `tool=edit, mode=danger-full-access` to auto-approve all out-of-workspace edits
+- **Always-human rules** (`denyRules`): view/remove (rejection-upgraded rules)
+- **Learning state**: confirmation counts (`stats`) + confirmed samples (`history`)
+- **Thresholds & timeout**: edit `riskyThreshold` / `judgeTimeoutMs` directly
+
+All changes go through `POST /api/auto-approve/rules` into `allowlist.json` — **hot-reloaded immediately** (no restart); `POST /api/auto-approve/setup` handles one-click setup.
+
 ## Human Review UI (v0.4.0+)
 
 Two review entry points appear whenever a command is auto-approved (strict DSH design language, `--dsw-alias-*` tokens):
