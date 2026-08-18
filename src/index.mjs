@@ -30,7 +30,7 @@
  *   $DSH_HOME/auto-approve/learning.json   学习状态（跨会话持久化）
  *   $DSH_HOME/auto-approve/audit.log       审计（追加式）
  */
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -41,7 +41,181 @@ const ALLOWLIST_PATH = join(DATA_DIR, 'allowlist.json')
 const LEARNING_PATH = join(DATA_DIR, 'learning.json')
 const AUDIT_PATH = join(DATA_DIR, 'audit.log')
 const EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
+const SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
 const PROFILE_PATCH_PATH = join(DSH_HOME, 'profiles', 'web', 'cordis.patch.yml')
+
+// 快照限制：单文件 ≤256KB、每事件 ≤5 个文件
+const SNAPSHOT_MAX_BYTES = 256 * 1024
+const SNAPSHOT_MAX_FILES = 5
+
+/** 判定文本文件（跳过二进制/图片等） */
+const SNAPSHOT_BINARY_RE = /[\x00-\x08\x0e-\x1f]/
+function isSnapshotText(buf) {
+  if (buf.length > SNAPSHOT_MAX_BYTES) return false
+  const head = buf.subarray(0, Math.min(buf.length, 8192))
+  return !SNAPSHOT_BINARY_RE.test(head.toString('latin1'))
+}
+
+/** 读取文件快照（文本，限制大小）；失败返回 null */
+function readSnapshotFile(absPath) {
+  try {
+    const buf = readFileSync(absPath)
+    if (!isSnapshotText(buf)) return null
+    return buf.toString('utf8')
+  } catch { return null }
+}
+
+/** 快照目录安全包装：列目录 / 取大小 / 删除（失败不抛） */
+function readdirSyncSafe(dir) {
+  try { return readdirSync(dir) } catch { return [] }
+}
+function statSyncSafe(absPath) {
+  try { return statSync(absPath).size } catch { return 0 }
+}
+function rmSyncSafe(absPath) {
+  rmSync(absPath, { force: true })
+}
+
+/** 判断某个快照文件是否属于指定会话（读 JSON 的 sessionId 字段；无 sessionId 的旧快照视为不匹配，仅全量操作命中） */
+function snapshotMatchesSession(absPath, sessionId) {
+  if (!sessionId) return true
+  try {
+    const data = JSON.parse(readFileSync(absPath, 'utf8'))
+    return String(data.sessionId || '') === String(sessionId)
+  } catch { return false }
+}
+
+/** 解析文件路径为绝对路径（~ → home，/ → 原样，相对 → 依次尝试会话 cwd / 进程 cwd / home，取存在的） */
+function resolveAbsPath(p, baseDir) {
+  const s = String(p || '')
+  if (s.startsWith('~')) return join(homedir(), s.slice(1))
+  if (s.startsWith('/')) return s
+  const candidates = [baseDir, process.cwd(), homedir()].filter((b) => typeof b === 'string' && b)
+  const seen = new Set()
+  for (const b of candidates) {
+    const abs = join(b, s)
+    if (!seen.has(abs)) {
+      seen.add(abs)
+      if (existsSync(abs)) return abs
+    }
+  }
+  // 都不存在：返回第一个候选（快照保存时会因读不到而跳过，保持确定性）
+  return join(candidates[0] || process.cwd(), s)
+}
+
+/** 保存事件涉及文件的快照（审批时 = 改动前内容） */
+function saveEventSnapshots(eventId, files, baseDir, sessionId) {
+  const list = files || []
+  if (list.length === 0) return
+  const snapshots = []
+  const seen = new Set()
+  for (const f of list) {
+    if (snapshots.length >= SNAPSHOT_MAX_FILES) break
+    const abs = resolveAbsPath(f, baseDir)
+    if (seen.has(abs)) continue
+    seen.add(abs)
+    const content = readSnapshotFile(abs)
+    if (content === null) continue
+    snapshots.push({ path: abs, content, ts: new Date().toISOString() })
+  }
+  if (snapshots.length === 0) return
+  const cwdUsed = (typeof baseDir === 'string' && baseDir) ? baseDir : process.cwd()
+  try {
+    ensureDataDir()
+    mkdirSync(SNAPSHOTS_DIR, { recursive: true })
+    writeFileSync(join(SNAPSHOTS_DIR, String(eventId) + '.json'), JSON.stringify({ eventId, sessionId: String(sessionId || ''), cwd: cwdUsed, snapshots }, null, 2), 'utf8')
+  } catch (error) {
+    console.error(`[${NAME}] 保存快照失败`, error)
+  }
+}
+
+/** 读取事件快照 */
+function loadEventSnapshots(eventId) {
+  try {
+    const raw = readFileSync(join(SNAPSHOTS_DIR, String(eventId) + '.json'), 'utf8')
+    const data = JSON.parse(raw)
+    return Array.isArray(data.snapshots) ? data.snapshots : []
+  } catch { return [] }
+}
+
+/** 逐行 diff：只返回变更行（add/del） */
+function diffLines(before, after, contextLines) {
+  const CTX = (typeof contextLines === 'number' && contextLines >= 0) ? contextLines : 5
+  const a = String(before == null ? '' : before).split('\n')
+  const b = String(after == null ? '' : after).split('\n')
+  // 行级贪心匹配：b 中每个值的位置队列，a 按序匹配（保持顺序、近似 LCS）
+  const bPos = new Map()
+  for (let j = 0; j < b.length; j++) {
+    if (!bPos.has(b[j])) bPos.set(b[j], [])
+    bPos.get(b[j]).push(j)
+  }
+  const aMatch = new Array(a.length).fill(-1)
+  const bUsed = new Array(b.length).fill(false)
+  let limit = 0
+  for (let i = 0; i < a.length; i++) {
+    const q = bPos.get(a[i])
+    if (!q) continue
+    for (const pos of q) {
+      if (pos >= limit && !bUsed[pos]) { aMatch[i] = pos; bUsed[pos] = true; limit = pos + 1; break }
+    }
+  }
+  // 双指针生成位置交错的操作序列（same/del/add），保留原/新行号
+  const ops = [] // {type:'same'|'del'|'add', aNo?, bNo?, text}
+  let i = 0, j = 0
+  while (i < a.length || j < b.length) {
+    if (i < a.length && aMatch[i] >= 0) {
+      const target = aMatch[i]
+      while (j < target) { ops.push({ type: 'add', bNo: j + 1, text: b[j] }); j++ }
+      ops.push({ type: 'same', aNo: i + 1, bNo: target + 1, text: a[i] })
+      j = target + 1
+      i++
+    } else if (i < a.length) {
+      ops.push({ type: 'del', aNo: i + 1, text: a[i] })
+      i++
+    } else {
+      ops.push({ type: 'add', bNo: j + 1, text: b[j] })
+      j++
+    }
+  }
+  // 标记展示行：变更行 ±CTX 的 same 行作为上下文
+  const show = new Array(ops.length).fill(false)
+  for (let idx = 0; idx < ops.length; idx++) {
+    if (ops[idx].type === 'same') continue
+    for (let k = Math.max(0, idx - CTX); k <= Math.min(ops.length - 1, idx + CTX); k++) show[k] = true
+  }
+  // 聚类 hunk：连续展示行成块，块间隐藏行数记为 hiddenBefore（首块为 0，无参照前置）
+  const hunks = []
+  let hiddenBefore = 0
+  let pending = []
+  let started = false
+  for (let idx = 0; idx < ops.length; idx++) {
+    if (show[idx]) {
+      started = true
+      pending.push(ops[idx])
+    } else {
+      if (started && pending.length) {
+        hunks.push({ hiddenBefore, lines: pending })
+        pending = []
+        started = false
+      }
+      hiddenBefore++
+    }
+  }
+  if (pending.length && started) hunks.push({ hiddenBefore, lines: pending })
+  if (hunks.length > 0) hunks[0].hiddenBefore = 0
+  const added = ops.filter((o) => o.type === 'add').length
+  const removed = ops.filter((o) => o.type === 'del').length
+  const stats = {
+    added,
+    removed,
+    contextLines: Math.max(a.length, b.length) - (added + removed),
+  }
+  return {
+    hunks: hunks.map((h) => ({ hiddenBefore: h.hiddenBefore, lines: h.lines })),
+    stats,
+    changedLines: ops.filter((o) => o.type !== 'same').slice(0, 500),
+  }
+}
 
 // auto-approve 权限预设（一键初始化时写入 cordis.patch.yml 的 permission 条目）
 const AUTO_APPROVE_PRESET_YAML = `      auto-approve:
@@ -88,16 +262,28 @@ function extractFiles(text) {
   const seen = new Set()
   const add = (v) => {
     const seg = v.replace(/[，。；、,.;:：\s]+$/g, '').trim()
-    if (seg.length >= 3 && seg.length <= 120 && !seen.has(seg)) { seen.add(seg); found.push(seg) }
+    if (seg.length < 3 || seg.length > 120) return
+    // 按文件名（basename）去重：同一文件的绝对/相对/裸名只保留最先出现的完整形式（快照解析用）
+    const base = String(seg).split('/').pop()
+    if (!base || base.length < 2) return
+    if (seen.has(base)) return
+    seen.add(base)
+    found.push(seg)
   }
   for (const m of s.matchAll(/(?:~\/|\/|\.\/)?[\w@.-]+\/[\w@.\/-]+/g)) add(m[0])
   for (const m of s.matchAll(/[\w@.-]+\.(?:md|js|json|ya?ml|env|txt|py|ts|css|html|log|mjs|cjs)/gi)) add(m[0])
   return found.slice(0, 8)
 }
 
-/** 记录一次自动放行事件（结构化，供 client 审查界面轮询展示） */
-function recordAutoAllow(sessionId, toolName, mode, reason, justification, verdict) {
+/**
+ * 记录一次审批事件（结构化，供 client 审查界面轮询展示）。
+ * kind: 'auto'（自动放行）/ 'manual-pending'（转人工等待）/ 'manual-approved'（人工通过）/
+ *       'manual-rejected'（人工拒绝）
+ * learningCount/threshold：人工通过时的学习进度（n/3）
+ */
+function recordApprovalEvent(sessionId, toolName, mode, reason, justification, verdict, opts) {
   eventSeq += 1
+  const o = opts || {}
   const ev = {
     id: eventSeq,
     ts: new Date().toISOString(),
@@ -109,13 +295,28 @@ function recordAutoAllow(sessionId, toolName, mode, reason, justification, verdi
     verdict: String(verdict || 'auto'),
     files: extractFiles(justification)
   }
+  if (o.kind) ev.kind = o.kind
+  if (o.learningCount !== undefined) ev.learningCount = o.learningCount
+  if (o.threshold !== undefined) ev.threshold = o.threshold
+  if (o.category) ev.category = o.category
+  // path：判定路径标识（hard-category / unknown-category / deny-rule / deny / flash-failed / neutral-reject / neutral-confirm）
+  if (o.path) ev.path = o.path
   try {
     ensureDataDir()
     appendFileSync(EVENTS_PATH, JSON.stringify(ev) + '\n', 'utf8')
+    // 自动放行且涉及文件 → 保存改动前快照（审批发生在写入前，此刻文件仍是旧内容）
+    if (ev.kind === 'auto' && ev.files && ev.files.length > 0) {
+      saveEventSnapshots(ev.id, ev.files, (o && o.baseDir) || null, sessionId)
+    }
   } catch (error) {
-    console.error(`[${NAME}] 记录自动放行事件失败`, error)
+    console.error(`[${NAME}] 记录审批事件失败`, error)
   }
   return ev
+}
+
+/** 兼容旧调用：记录自动放行事件（opts 透传给 recordApprovalEvent） */
+function recordAutoAllow(sessionId, toolName, mode, reason, justification, verdict, opts) {
+  return recordApprovalEvent(sessionId, toolName, mode, reason, justification, verdict, Object.assign({ kind: 'auto' }, opts || {}))
 }
 
 // 不可逆危险操作（deny 层，命中即转人工，优先级最高）
@@ -252,13 +453,32 @@ function applyRuleOp(op, kind, value) {
   }
 
   const list = config[kind]
-  if (!Array.isArray(list)) return { ok: false, error: `未知规则类型: ${kind}` }
+  if (!Array.isArray(list)) {
+    // 学习状态终止：kind='learning'，value=key（tool|mode|category）
+    if (kind === 'learning') {
+      if (op !== 'remove') return { ok: false, error: 'learning 仅支持 remove' }
+      const key = String(value || '').trim()
+      if (!key) return { ok: false, error: 'key 不能为空' }
+      if (learning.stats[key] !== undefined || learning.history[key] !== undefined) {
+        delete learning.stats[key]
+        delete learning.history[key]
+        saveJson(LEARNING_PATH, learning)
+        audit(`LEARN   ${key} 用户终止学习`)
+        return { ok: true, removed: true }
+      }
+      return { ok: false, error: '未找到该学习项' }
+    }
+    return { ok: false, error: `未知规则类型: ${kind}` }
+  }
 
   if (op === 'add') {
     if (kind === 'denyKeywords' || kind === 'hardCategories') {
       const str = String(value || '').trim()
       if (!str) return { ok: false, error: '值不能为空' }
-      if (!list.includes(str)) list.push(str)
+      if (!list.includes(str)) {
+        list.push(str)
+        audit(`CONFIG  ${kind} + ${str}`)
+      }
     } else {
       if (!value || typeof value !== 'object') return { ok: false, error: '规则必须是对象' }
       const hasAny = value.tool || value.mode || value.category || value.contains
@@ -267,6 +487,7 @@ function applyRuleOp(op, kind, value) {
       if (!dup) {
         if (!value.description) value.description = '用户自定义'
         list.push(value)
+        audit(`CONFIG  ${kind} + ${JSON.stringify(value)}`)
       }
     }
     saveJson(ALLOWLIST_PATH, config)
@@ -278,12 +499,14 @@ function applyRuleOp(op, kind, value) {
     if (kind === 'denyKeywords' || kind === 'hardCategories') {
       const str = String(value || '').trim()
       for (let i = list.length - 1; i >= 0; i--) if (String(list[i]) === str) list.splice(i, 1)
+      if (list.length !== before) audit(`CONFIG  ${kind} - ${str}`)
     } else {
       const v = value || {}
       for (let i = list.length - 1; i >= 0; i--) {
         const r = list[i] || {}
         if (r.tool === v.tool && r.mode === v.mode && r.category === v.category && r.contains === v.contains) list.splice(i, 1)
       }
+      if (list.length !== before) audit(`CONFIG  ${kind} - ${JSON.stringify(v)}`)
     }
     if (list.length === before) return { ok: false, error: '未找到匹配的规则' }
     saveJson(ALLOWLIST_PATH, config)
@@ -598,10 +821,201 @@ export default {
     } catch (error) {
       console.error(`[${NAME}] 注册规则/初始化 API 失败`, error)
     }
+
+    // ---- diff / 撤销 / 快照管理 API ----
+    let offDiffRoute = null
+    let offRevertRoute = null
+    let offSnapStatsRoute = null
+    let offSnapClearRoute = null
+
+    /** 投递消息到会话（撤销指令）；复用 workspace-panels 的 chatSend 机制 */
+    const sendToSession = async (sessionId, content) => {
+      // DSH 用户消息 content 必须是块数组；裸字符串会被 GUI 渲染器按字符迭代，
+      // 每个字符渲染成一个「附加内容块」占位符，导致对话界面错乱（v0.5.0 事故根因）。
+      const textBlock = [{ type: 'text', text: content }]
+      const typertGateway = ctx.get('typertGateway')
+      if (typertGateway && typeof typertGateway.invoke === 'function') {
+        try {
+          await typertGateway.invoke({ namespace: 'session', method: 'prompt', args: { sessionId, mode: 'queue', content: textBlock } })
+          return { ok: true, via: 'gateway' }
+        } catch (e) {
+          console.log(`[${NAME}] gateway 投递失败，改用 followup：${(e && e.message) || e}`)
+        }
+      }
+      const agents = ctx.get('agents')
+      if (agents && typeof agents.get === 'function') {
+        const agent = agents.get(sessionId)
+        if (agent && typeof agent.followup === 'function') {
+          agent.followup({
+            id: 'ag-revert-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36),
+            role: 'user',
+            content: textBlock,
+            source: { kind: 'user' },
+          })
+          return { ok: true, via: 'followup' }
+        }
+      }
+      return { ok: false, error: '没有可用的消息投递通道' }
+    }
+
+    try {
+      if (ctx.webServer && typeof ctx.webServer.register === 'function') {
+        const send = (res, code, obj) => {
+          res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-cache' })
+          res.end(JSON.stringify(obj))
+        }
+
+        offDiffRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/diff',
+          handler: async (req, res) => {
+            try {
+              if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { ok: false, error: 'method not allowed' })
+              const url = new URL(req.url, 'http://localhost')
+              const eventId = Number.parseInt(url.searchParams.get('eventId') || '', 10)
+              const path = url.searchParams.get('path') || ''
+              if (!Number.isInteger(eventId) || !path) return send(res, 400, { ok: false, error: 'eventId/path 必填' })
+              const snaps = loadEventSnapshots(eventId)
+              // client 传的是 justification 中的原始路径（可能绝对/相对/裸文件名），多基准对齐快照的绝对路径
+              const base = resolveAbsPath(path)
+              const baseName = String(path).split('/').pop()
+              const snap = snaps.find((s) => s.path === base || s.path === path)
+                || snaps.find((s) => s.path.endsWith('/' + path) || (baseName && s.path.endsWith('/' + baseName)))
+              if (!snap) return send(res, 404, { ok: false, error: '该事件没有此文件的快照' })
+              const before = snap.content
+              const after = readSnapshotFile(snap.path)
+              const result = diffLines(before, after == null ? null : after)
+              send(res, 200, {
+                ok: true,
+                path,
+                eventId,
+                beforeExists: before != null,
+                afterExists: after != null,
+                changedLines: result.changedLines,
+                hunks: result.hunks || [],
+                stats: result.stats,
+              })
+            } catch (e) {
+              send(res, 400, { ok: false, error: String((e && e.message) || e) })
+            }
+          },
+        })
+
+        offRevertRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/revert',
+          handler: async (req, res) => {
+            try {
+              if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method not allowed' })
+              const body = await readBody(req)
+              const sessionId = String(body.sessionId || '')
+              const eventId = Number.parseInt(String(body.eventId || ''), 10)
+              if (!sessionId || !Number.isInteger(eventId)) return send(res, 400, { ok: false, error: 'sessionId/eventId 必填' })
+              // 读取事件信息组装撤销指令
+              const event = (() => {
+                try {
+                  const text = readFileSync(EVENTS_PATH, 'utf8')
+                  for (const line of text.split('\n')) {
+                    if (!line.trim()) continue
+                    try {
+                      const ev = JSON.parse(line)
+                      if (ev.id === eventId) return ev
+                    } catch { /* 跳过 */ }
+                  }
+                } catch { /* 无 */ }
+                return null
+              })()
+              if (!event) return send(res, 404, { ok: false, error: '未找到该事件' })
+              const files = (event.files || []).map((f) => '`' + f + '`').join('、')
+              const snapDir = SNAPSHOTS_DIR
+              // 快照缺失保护：快照被清除后，撤销指令应如实告知 agent，避免其盲目恢复
+              const snaps = loadEventSnapshots(eventId)
+              const snapHint = snaps.length > 0
+                ? '改动前的文件内容快照保存在 ' + snapDir + '（按事件 ID 命名），可参考恢复；请确认改动内容后执行撤销。'
+                : '注意：该事件已无可用快照（可能已被清除），请基于当前文件内容判断如何恢复原状；无法确定时请先说明再操作。'
+              const content = '请撤销以下自动审批操作带来的文件改动（恢复为审批前的状态）：\n' +
+                '- 操作：' + (event.justification || event.reason || '(无说明)') + '\n' +
+                '- 涉及文件：' + (files || '(未知)') + '\n' +
+                '- 判定：' + (event.verdict || 'auto') + '（自动放行）\n' +
+                '- 事件时间：' + (event.ts || '') + '\n' +
+                snapHint
+              const result = await sendToSession(sessionId, content)
+              audit(`REVERT  event=${eventId} session=${sessionId} via=${result.via || 'none'} | ${event.justification ? event.justification.slice(0, 80) : ''}`)
+              send(res, result.ok ? 200 : 500, result)
+            } catch (e) {
+              send(res, 400, { ok: false, error: String((e && e.message) || e) })
+            }
+          },
+        })
+
+        offSnapStatsRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/snapshots-stats',
+          handler: async (req, res) => {
+            try {
+              const url = new URL(req.url, 'http://localhost')
+              const filterSession = url.searchParams.get('sessionId') || ''
+              let count = 0
+              let bytes = 0
+              const ids = []
+              try {
+                for (const name of readdirSyncSafe(SNAPSHOTS_DIR)) {
+                  if (!name.endsWith('.json')) continue
+                  const id = String(name).slice(0, -'.json'.length)
+                  // 按会话过滤：读快照 JSON 匹配 sessionId（无过滤时全部计入）
+                  if (filterSession && !snapshotMatchesSession(join(SNAPSHOTS_DIR, name), filterSession)) continue
+                  count++
+                  ids.push(id)
+                  try { bytes += statSyncSafe(join(SNAPSHOTS_DIR, name)) } catch { /* 跳过 */ }
+                }
+              } catch { /* 目录不存在 */ }
+              send(res, 200, { ok: true, count, bytes, ids, sessionId: filterSession || null })
+            } catch (e) {
+              send(res, 400, { ok: false, error: String((e && e.message) || e) })
+            }
+          },
+        })
+
+        offSnapClearRoute = ctx.webServer.register({
+          kind: 'exact',
+          path: '/api/auto-approve/snapshots-clear',
+          handler: async (req, res) => {
+            try {
+              if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method not allowed' })
+              const body = await readBody(req)
+              const filterSession = String((body && body.sessionId) || '')
+              let removed = 0
+              try {
+                for (const name of readdirSyncSafe(SNAPSHOTS_DIR)) {
+                  if (!name.endsWith('.json')) continue
+                  // 按会话过滤：不匹配则跳过（无过滤时全清）
+                  if (filterSession && !snapshotMatchesSession(join(SNAPSHOTS_DIR, name), filterSession)) continue
+                  try { rmSyncSafe(join(SNAPSHOTS_DIR, name)); removed++ } catch { /* 跳过 */ }
+                }
+              } catch { /* 目录不存在 */ }
+              audit(`CONFIG  snapshots-clear session=${filterSession || '*'} removed=${removed}`)
+              send(res, 200, { ok: true, removed, sessionId: filterSession || null })
+            } catch (e) {
+              send(res, 400, { ok: false, error: String((e && e.message) || e) })
+            }
+          },
+        })
+
+        console.log(`[${NAME}] diff/撤销/快照 API 已注册`)
+      } else {
+        console.warn(`[${NAME}] webServer 不可用，diff/快照 API 未注册`)
+      }
+    } catch (error) {
+      console.error(`[${NAME}] 注册 diff/快照 API 失败`, error)
+    }
     ctx.effect(() => () => {
       if (offEventsRoute) { try { offEventsRoute() } catch (e) {} }
       if (offRulesRoute) { try { offRulesRoute() } catch (e) {} }
       if (offSetupRoute) { try { offSetupRoute() } catch (e) {} }
+      if (offDiffRoute) { try { offDiffRoute() } catch (e) {} }
+      if (offRevertRoute) { try { offRevertRoute() } catch (e) {} }
+      if (offSnapStatsRoute) { try { offSnapStatsRoute() } catch (e) {} }
+      if (offSnapClearRoute) { try { offSnapClearRoute() } catch (e) {} }
     })
 
     const resolveModel = () => {
@@ -633,7 +1047,8 @@ export default {
         system: systemPrompt,
         temperature: 0,
         reasoningEffort: 'off',
-        maxTokens: 64,
+        // 256：结论仅几个词，但模型偶发先输出复述/思考文本，64 会被截断导致解析失败
+        maxTokens: 256,
         signal
       })) {
         if (chunk.type === 'text-delta') text += chunk.text
@@ -668,6 +1083,10 @@ export default {
       // 裸 RISKY（无类别，旧协议残留）→ 按中立处理（有计数/裁决兜底）
       if (trimmed.includes('RISKY')) return { verdict: 'risky', category: 'neutral' }
       if (trimmed.includes('SAFE')) return { verdict: 'safe' }
+      // 模型表达不确定/无法判断（而非复述 prompt）→ 按中立处理（走确认制，fail-safe）
+      if (/无法判断|无法确定|不确定|不能确定|无法评估|UNCERTAIN|CANNOT (JUDGE|DETERMINE|ASSESS)/i.test(text)) {
+        return { verdict: 'risky', category: 'neutral' }
+      }
       throw new Error('flash 输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
     }
 
@@ -710,6 +1129,8 @@ export default {
       const trimmed = text.trim().toUpperCase()
       if (trimmed.includes('DIFFERENT')) return { verdict: 'different' }
       if (trimmed.includes('SAME')) return { verdict: 'same' }
+      // 无法判断 → 按 different（fail-safe：验证不了就人工）
+      if (/无法判断|不确定|无法确定|UNCERTAIN/i.test(text)) return { verdict: 'different' }
       throw new Error('同类验证输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
     }
 
@@ -801,18 +1222,32 @@ export default {
         const reason = String(req.reason || '')
         const { mode, justification } = parseReason(reason)
         const sessionId = typeof session.id === 'string' ? session.id : ''
+        // 会话工作目录：相对路径快照解析的基准（DSH SessionHeader.cwd）
+        const sessionCwd = (typeof session.cwd === 'string' && session.cwd) ? session.cwd : ''
+
+        // 转人工统一处理：记录 pending → 交下游（web answerer）→ 记录终态事件（关闭提示条）
+        const forwardToHuman = async (sid, tName, tMode, rsn, jst, cat, why) => {
+          recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-pending', { kind: 'manual-pending', category: cat || '', path: why })
+          const out = await next()
+          if (out === 'allowed-once') {
+            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-approved', { kind: 'manual-approved', category: cat || '', path: why })
+          } else if (out === 'rejected') {
+            recordApprovalEvent(sid, tName, tMode, rsn, jst, 'manual-rejected', { kind: 'manual-rejected', category: cat || '', path: why })
+          }
+          return out
+        }
 
         // 1. DENY 层：不可逆危险词 → 转人工（fail-safe，最高优先）
         if (looksDeny(toolName + ' ' + reason)) {
           audit(`DENY    ${toolName} mode=${mode || 'none'} | ${reason.slice(0, 160)}`)
-          return next()
+          return forwardToHuman(sessionId, toolName, mode, reason, justification, '', 'deny')
         }
 
         // 2. 白名单层：命中规则 → 直接放行（确定性，不过 flash）
         const matchedRule = matchRule(config.allowRules, toolName, mode, null, justification)
         if (matchedRule) {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${matchedRule.description || 'matched'})`)
-          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'rule')
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'rule', { baseDir: sessionCwd })
           return 'allowed-once'
         }
 
@@ -821,7 +1256,7 @@ export default {
 
         if (verdict === 'safe') {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-safe${timedOut ? '，重试后' : ''})`)
-          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-safe')
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-safe', { baseDir: sessionCwd })
           return 'allowed-once'
         }
 
@@ -830,26 +1265,26 @@ export default {
         // 4a. flash 完全失败（超时×2/异常×2）→ 转人工（fail-safe：无法判断绝不自动放行）
         if (failed) {
           audit(`FAILED  ${toolName} mode=${mode || 'none'} → 人工 | ${reason.slice(0, 120)}`)
-          return next()
+          return forwardToHuman(sessionId, toolName, mode, reason, justification, cat, 'flash-failed')
         }
 
         // 4b. 硬风险类别（deletion/credential/remote/system/bulk）→ 直接转人工（必须人工确认，不计数不学习）
         const hard = config.hardCategories || DEFAULT_HARD_CATEGORIES
         if (hard.includes(cat)) {
           audit(`HARD    ${toolName} mode=${mode || 'none'} category=${cat} → 人工 | ${reason.slice(0, 120)}`)
-          return next()
+          return forwardToHuman(sessionId, toolName, mode, reason, justification, cat, 'hard-category')
         }
 
         // 4c. 协议外类别（模型输出未知类别）→ 判定不可靠，fail-safe 转人工
         if (cat !== 'neutral') {
           audit(`UNKNOWN ${toolName} mode=${mode || 'none'} category=${cat} → 人工 | ${reason.slice(0, 120)}`)
-          return next()
+          return forwardToHuman(sessionId, toolName, mode, reason, justification, cat, 'unknown-category')
         }
 
         // 4d. denyRules 命中（此前用户裁决拒绝过的 key）→ 直接转人工（拒绝优先于沉淀）
         if (matchRule(config.denyRules, toolName, mode, cat, justification)) {
           audit(`DENYRULE ${toolName} mode=${mode || 'none'} category=${cat} → 人工 | ${reason.slice(0, 120)}`)
-          return next()
+          return forwardToHuman(sessionId, toolName, mode, reason, justification, cat, 'deny-rule')
         }
 
         // 4e. 沉淀规则（带 category 的学习规则，用户批准过）→ 直接放行，不再计数
@@ -859,16 +1294,16 @@ export default {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${learnedRule.description || '沉淀规则'})`)
           delete learning.stats[key]
           saveJson(LEARNING_PATH, learning)
-          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'learned')
+          recordAutoAllow(sessionId, toolName, mode, reason, justification, 'learned', { baseDir: sessionCwd })
           return 'allowed-once'
         }
 
-        // 4f. 中立类别（neutral）：前 N-1 次人工确认，第 N 次起自动放行并沉淀
-        //     （同一 key 被用户连续确认 N-1 次后视为可信，第 N 次自动放行并写入沉淀规则）
+        // 4f. 中立类别（neutral）：人工确认学习制——确认满 N 次后，第 N+1 次起自动放行并沉淀
+        //     （同一 key 被用户确认 N 次后视为可信，后续自动放行并写入沉淀规则）
         const threshold = config.riskyThreshold || 3
         const confirmed = learning.stats[key] || 0
 
-        if (confirmed >= threshold - 1) {
+        if (confirmed >= threshold) {
           const fingerprint = extractOperationFingerprint(justification)
           const samples = learning.history[key] || []
           const fpHit = Boolean(fingerprint) && samples.some((s) => s.fp === fingerprint)
@@ -889,7 +1324,7 @@ export default {
             delete learning.stats[key]
             delete learning.history[key]
             saveJson(LEARNING_PATH, learning)
-            recordAutoAllow(sessionId, toolName, mode, reason, justification, 'fpHit')
+            recordAutoAllow(sessionId, toolName, mode, reason, justification, 'fpHit', { baseDir: sessionCwd })
             return 'allowed-once'
           }
 
@@ -916,7 +1351,7 @@ export default {
                 audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（无指纹，未沉淀）| ${reason.slice(0, 100)}`)
               }
               audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
-              recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same')
+              recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', { baseDir: sessionCwd })
               return 'allowed-once'
             }
             // 判 DIFFERENT / 验证失败 → 落人工确认
@@ -925,12 +1360,14 @@ export default {
 
           // 指纹未命中（且无样本可验证 / 判不同类）：转人工确认
           audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold}（操作未确认过）→ 人工 outcome=? | ${reason.slice(0, 120)}`)
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', { kind: 'manual-pending', category: cat, path: 'neutral-confirm' })
           const outcome = await next()
           audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
           if (outcome === 'allowed-once' && learning.enabled) {
             // 批准 → 记录本次操作样本（背景+指纹）；计数保持阈值位
             recordSample(key, justification)
             saveJson(LEARNING_PATH, learning)
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed, threshold, category: cat, path: 'neutral-confirm' })
           } else if (outcome === 'rejected') {
             // 拒绝 → 永久人工（带指纹；提取不到则拦全部同类，拒绝从严）
             const rule = { tool: toolName, category: cat }
@@ -944,12 +1381,14 @@ export default {
             delete learning.stats[key]
             delete learning.history[key]
             saveJson(LEARNING_PATH, learning)
+            recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'neutral-reject' })
           }
           return outcome
         }
 
-        // 前 N-1 次 → 人工确认
+        // 前 N 次 → 人工确认
         audit(`RISKY   ${toolName} mode=${mode || 'none'} category=${cat} confirm=${confirmed + 1}/${threshold} → 人工 outcome=? | ${reason.slice(0, 120)}`)
+        recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-pending', { kind: 'manual-pending', category: cat, path: 'neutral-confirm' })
         const outcome = await next()
         audit(`OUTCOME ${key} outcome=${outcome} | ${reason.slice(0, 80)}`)
 
@@ -958,6 +1397,7 @@ export default {
           learning.stats[key] = confirmed + 1
           recordSample(key, justification)
           saveJson(LEARNING_PATH, learning)
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-approved', { kind: 'manual-approved', learningCount: confirmed + 1, threshold, category: cat, path: 'neutral-confirm' })
         } else if (outcome === 'rejected') {
           // 拒绝 → 升级为永久人工规则（带操作指纹；提取不到则拦全部同类，拒绝从严）
           const fingerprint = extractOperationFingerprint(justification)
@@ -972,6 +1412,7 @@ export default {
           delete learning.stats[key]
           delete learning.history[key]
           saveJson(LEARNING_PATH, learning)
+          recordApprovalEvent(sessionId, toolName, mode, reason, justification, 'manual-rejected', { kind: 'manual-rejected', category: cat, path: 'neutral-reject' })
         }
         // cancelled/unavailable：不计数（用户未表态，下次仍人工确认）
         return outcome

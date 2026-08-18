@@ -2,7 +2,7 @@
 
 > 首页：[简体中文](../README.md) · [English](../README.en.md) · 指南：[中文](GUIDE.md) · [English](GUIDE.en.md)
 
-DeepSeek Harness 自动审批门控插件 v0.4.0：**最小人工介入，只把必须人工确认的操作转人工（fail-safe）**。
+DeepSeek Harness 自动审批门控插件 v0.5.0：**最小人工介入，只把必须人工确认的操作转人工（fail-safe）**。
 
 当会话的权限预设为 `auto-approve`（自动审批（Flash））时，每次审批请求（沙箱越界）按管道判定：
 
@@ -76,6 +76,7 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 | `learning.json` | 学习状态（自动维护，跨会话持久化） |
 | `audit.log` | 审计日志（追加式） |
 | `events.jsonl` | 自动放行事件（供审查 UI 展示，按会话隔离） |
+| `snapshots/` | 自动放行文件的改动前快照（按事件 ID 命名，供 diff 对比与撤销参考） |
 
 `allowlist.json` 结构（v3）：
 
@@ -106,28 +107,50 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 
 在会话的权限下拉（`/permission` 弹窗或设置页）选中**「自动审批（Flash）」**，该会话即启用自动审批；其他会话不受影响（按会话预设门控）。
 
-## 设置页（v0.4.1+）
+## 设置页（v0.4.2+）
 
-DSH 设置面板新增「自动审批」分区（settings.section），提供可视化规则管理：
+DSH 设置面板新增「自动审批」分区（settings.section，样式与 DSH 原生设置一致），按管道顺序提供可视化规则管理，每张卡片标注管道阶段：
 
 - **初始化卡片**：检测 `cordis.patch.yml` 是否已含 auto-approve 权限预设；未配置时点「一键配置」自动写入（文本级修改，保留注释格式），重启后生效
-- **管道总览**：当前判定管道说明 + 生效的硬风险类别徽标
-- **黑名单**（denyKeywords）：查看/添加/删除危险词（删除预置词有确认提示）
-- **白名单**（allowRules）：查看（标注 预置/学习沉淀/用户 来源）/添加（tool/mode/category/contains 表单）/删除 —— 例：添加 `tool=edit, mode=danger-full-access` 后所有工作区外 edit 自动放行
-- **永久人工**（denyRules）：查看/移除（拒绝升级的规则）
-- **学习状态**：确认计数（stats）+ 已确认样本（history）
-- **阈值与超时**：`riskyThreshold` / `judgeTimeoutMs` 直接修改
+- **管道总览**：判定链路 + 生效的硬风险类别徽标
+- **① DENY 层 · 黑名单**（denyKeywords）：查看/添加/删除危险词（删除预置词有确认提示）
+- **② 白名单层 · 白名单**（allowRules）：查看（预置/学习沉淀/用户 来源标签）/添加（tool/mode/category/contains 表单）/删除 —— 例：`tool=edit, mode=danger-full-access` → 工作区外 edit 自动放行
+- **③ denyRules 层 · 永久人工**：拒绝升级的规则，查看/移除
+- **④ Flash 判定 · 阈值与超时**：`riskyThreshold`（学习满 N 次后第 N+1 次自动放行）/ `judgeTimeoutMs` 直接修改
+- **⑤ 学习沉淀 · 正在学习**：展示确认计数（n/N）与样本；**「终止」按钮可介入删除**（删除计数与样本，重新学习）
 
 所有修改通过 `POST /api/auto-approve/rules` 写入 `allowlist.json`，**热更新即时生效**（无需重启）；`POST /api/auto-approve/setup` 负责一键初始化。
 
-## 人工审查 UI（v0.4.0+）
+## 人工审查 UI（v0.4.2+）
 
-每次命令被自动放行时，提供两处审查入口（严格按 DSH 设计语言，`--dsw-alias-*` tokens）：
+每次命令被自动放行或转人工审批时，提供审查入口（严格按 DSH 设计语言，`--dsw-alias-*` tokens）：
 
-1. **✅ 实时提示条**：输入框上方独立一行（`conversation.input.dock`，order=30，排在 todo/goal/queue 之下、不随流式对话滚动）。自动放行时出现绿色 ✅ 提示：工具 + 操作摘要 + 判定路径标签（白名单规则 / Flash 判定安全 / 沉淀规则 / 已确认操作 / Flash 同类验证），8 秒自动收起，可手动关闭；无事件时完全不占位
-2. **「审批」历史视图**：会话视图切换条「轨迹」右侧的「审批」tab（`conversation.view`，order=20）。展示**当前会话**所有自动放行动作的时间线（**最新在最上面**）：✅ + 时间 + 工具 + 原因（justification）+ 涉及文件标签 + 判定路径徽标
+1. **提示条**（输入框上方独立一行，`conversation.input.dock` order=30，不随流式对话滚动）：
+   - 自动放行 → 绿色 ✅：工具 + 摘要 + 判定路径（白名单规则 / Flash 判定安全 / 沉淀规则 / 已确认操作 / Flash 同类验证），8 秒收起
+   - **转人工审批 → 橙黄色**（`--dsw-alias-state-warn-*`）：显示「等待人工审批：<操作>」，**不自动收起**，直到你确认
+   - 人工通过 → 橙黄「学习 n/N，满 N 次后自动放行」（5 秒收起）；拒绝 → 红「已拒绝 · 升级永久人工」
+   - 打开会话时不弹历史提示（静默同步游标）
+2. **「审批」历史视图**：会话视图切换条「轨迹」右侧的「审批」tab（`conversation.view` order=20）。当前会话记录（**最新在上**）：自动放行（绿 ✅）、人工通过（橙黄 + 学习计数 n/N）、人工拒绝（红）
+3. **文件改动对比与撤销**（v0.5.0+）：自动放行且涉及文件时，host 在审批（写入前）保存文件**改动前快照**；历史视图中对应事件的**文件标签变为可点击**（蓝色描边），点击弹出 diff 面板：
+   - **只看变更行**：绿底 `+` 为新增行、红底 `-` 为删除行（经典 diff 语义），头部显示 +N / -M 行统计与「未变行」数；文件当前已不存在会提示
+   - **撤销此改动**：向当前会话投递一条撤销指令（含操作说明、涉及文件、事件时间、快照目录位置），AI 据此把文件恢复为审批前状态
+   - **diff 快照管理**：视图顶部显示「diff 快照 占用 · 条数」；「清除 diff 记录」按钮可一键删除全部快照（仅删除对比数据，不影响审批记录本身；删除后历史文件不可再查看对比）
+   - 限制：仅文本文件（单文件 ≤256KB、每事件 ≤5 个文件）会保存快照，二进制/超限文件不可点击
 
-数据链路：host 每次自动放行时追加结构化事件到 `~/.dsh/auto-approve/events.jsonl`（含 `sessionId`/`tool`/`mode`/`reason`/`justification`/`verdict`/`files`），浏览器通过 `GET /api/auto-approve/events?sessionId=&since=` 轮询（2s 增量 / 视图 5s 全量）。
+数据链路：host 每次判定追加结构化事件到 `~/.dsh/auto-approve/events.jsonl`（`kind`: auto / manual-pending / manual-approved / manual-rejected，含 sessionId/tool/mode/reason/justification/verdict/files/learningCount/threshold），浏览器通过 `GET /api/auto-approve/events?sessionId=&since=` 轮询（2s 增量 / 视图 5s 全量）。
+
+## 文件改动对比与撤销 API（v0.5.0+）
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/auto-approve/diff?eventId=&path=` | GET | 返回指定事件/文件的变更行（`changedLines`，add/del）与统计（`stats`），只读该事件快照中列出的路径 |
+| `/api/auto-approve/revert` | POST | `{sessionId, eventId}` → 组装撤销指令投递到对应会话（typertGateway 优先，agent.followup 兜底） |
+| `/api/auto-approve/snapshots-stats` | GET | 快照占用统计 `{count, bytes, ids}`（ids = 仍有快照的事件列表，用于判定哪些文件可点击） |
+| `/api/auto-approve/snapshots-clear` | POST | 删除全部快照文件（仅限 `snapshots/` 目录内 `.json`） |
+
+## 学习语义（v0.4.2+）
+
+中立操作确认制：同一「工具|模式|类别」每被人工批准一次计数 +1；**确认满 N 次（默认 3）后，第 N+1 次起自动放行**并沉淀带指纹规则。阈值状态内：指纹命中直接放行；未命中由 Flash 对照确认样本做语义同类验证（SAME 放行 / DIFFERENT 人工）；拒绝升级 denyRules 永久人工；「正在学习」可在设置页终止。
 
 ## 安全设计
 
@@ -146,11 +169,13 @@ DSH 设置面板新增「自动审批」分区（settings.section），提供可
 - 挂载于 `approval/request` 瀑布最前（`prepend: true`，先于 web answerer 接单）
 - 门控：`permissionPresets.current(session.events) === 'auto-approve'`
 - DSH 审批触发点是沙箱越界，`reason` 固定为 `escalate sandbox to <mode>: <justification>`，`mode` 仅 `workspace-write` / `danger-full-access` 两级
-- flash 判定：`reasoningEffort: 'off'` + `maxTokens: 64`，输出 `SAFE` 或 `RISKY:<category>`
+- flash 判定：`reasoningEffort: 'off'` + `maxTokens: 256`，输出 `SAFE` 或 `RISKY:<category>`
 - 超时兜底：`AbortController` 传入 `llm.stream` 的 signal（可取消底层请求），`Promise.race` + `ctx.timeout(judgeTimeoutMs)`，超时 abort 并重试 1 次
 - 同类验证：把当前操作背景/目的 + 用户确认样本交给 flash 语义判断（`SAME`/`DIFFERENT`），失败按 DIFFERENT 处理
 - 学习闭环：通过 waterfall 的 `next()` 返回值捕获人工裁决结果（`allowed-once` 沉淀 / `rejected` 升级）
 - 审查 UI：host 写 `events.jsonl` + `GET /api/auto-approve/events`（按 sessionId 过滤 + since 增量）；client 轮询展示
+- 快照与 diff：审批发生在写入前，自动放行事件落盘时保存 `snapshots/<eventId>.json`（仅文本 ≤256KB、每事件 ≤5 个文件）；diff 用近似逐行匹配只返回变更行（上限 500 行）
+- 撤销投递：`sendToSession` 优先 `typertGateway.invoke({namespace:'session', method:'prompt'})`（queue 模式），失败回退 `agent.followup`
 
 ## License
 

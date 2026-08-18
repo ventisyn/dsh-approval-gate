@@ -2,7 +2,7 @@
 
 > Home: [English](../README.en.md) · [简体中文](../README.md) · Guide: [English](GUIDE.en.md) · [中文](GUIDE.md)
 
-DeepSeek Harness auto-approval gate plugin v0.4.0: **minimal human intervention — only operations that must be confirmed go to a human (fail-safe)**.
+DeepSeek Harness auto-approval gate plugin v0.5.0: **minimal human intervention — only operations that must be confirmed go to a human (fail-safe)**.
 
 When a session's permission preset is `auto-approve` (Auto Approval (Flash)), every approval request (sandbox escalation) is judged through this pipeline:
 
@@ -76,6 +76,7 @@ Data files live under `$DSH_HOME/auto-approve/` (default `~/.dsh/auto-approve/`)
 | `learning.json` | Learning state (auto-maintained, persists across sessions) |
 | `audit.log` | Audit log (append-only) |
 | `events.jsonl` | Auto-approval events (for the review UI, per-session isolation) |
+| `snapshots/` | Pre-change snapshots of auto-approved files (named by event ID; used for diff and revert) |
 
 `allowlist.json` structure (v3):
 
@@ -106,28 +107,50 @@ Data files live under `$DSH_HOME/auto-approve/` (default `~/.dsh/auto-approve/`)
 
 Select **"Auto Approval (Flash)"** in the session's permission dropdown (`/permission` dialog or settings). Other sessions are unaffected (gated per session preset).
 
-## Settings Page (v0.4.1+)
+## Settings Page (v0.4.2+)
 
-A new "Auto Approval" section in the DSH settings panel (`settings.section`) provides visual rule management:
+A new "Auto Approval" section in the DSH settings panel (`settings.section`, styled like native DSH settings) provides visual rule management, cards ordered by pipeline stage:
 
 - **Setup card**: detects whether the `auto-approve` permission preset exists in `cordis.patch.yml`; if missing, click "Configure" to write it automatically (text-level edit, comments preserved), effective after restart
-- **Pipeline overview**: current judgment pipeline description + active hard-risk category badges
-- **Deny list** (`denyKeywords`): view/add/remove dangerous keywords (removing a predefined keyword asks for confirmation)
-- **Allow list** (`allowRules`): view (tagged predefined / learned / user) / add (tool/mode/category/contains form) / remove — e.g. add `tool=edit, mode=danger-full-access` to auto-approve all out-of-workspace edits
-- **Always-human rules** (`denyRules`): view/remove (rejection-upgraded rules)
-- **Learning state**: confirmation counts (`stats`) + confirmed samples (`history`)
-- **Thresholds & timeout**: edit `riskyThreshold` / `judgeTimeoutMs` directly
+- **Pipeline overview**: judgment pipeline + active hard-risk category badges
+- **① DENY · deny list** (`denyKeywords`): view/add/remove dangerous keywords (removing a predefined keyword asks for confirmation)
+- **② Allow list** (`allowRules`): view (tagged predefined / learned / user) / add (tool/mode/category/contains form) / remove — e.g. `tool=edit, mode=danger-full-access` auto-approves out-of-workspace edits
+- **③ denyRules · always-human**: rejection-upgraded rules, view/remove
+- **④ Flash · thresholds & timeout**: edit `riskyThreshold` (auto-approve starts at N+1th occurrence after N confirmations) / `judgeTimeoutMs` directly
+- **⑤ Learning · in progress**: confirmation counts (n/N) + samples with a **"Stop" button** to intervene (removes count and samples, restarts learning)
 
 All changes go through `POST /api/auto-approve/rules` into `allowlist.json` — **hot-reloaded immediately** (no restart); `POST /api/auto-approve/setup` handles one-click setup.
 
-## Human Review UI (v0.4.0+)
+## Human Review UI (v0.4.2+)
 
-Two review entry points appear whenever a command is auto-approved (strict DSH design language, `--dsw-alias-*` tokens):
+Review entry points appear on auto-approval or human-approval (strict DSH design language, `--dsw-alias-*` tokens):
 
-1. **✅ Live notice strip**: a dedicated row above the composer (`conversation.input.dock`, order=30, below todo/goal/queue, does not scroll with the conversation). A green ✅ notice appears on auto-approval: tool + operation summary + verdict label (allowlist / flash-safe / learned / confirmed / flash-same), auto-dismisses after 8s, closable manually; takes zero space when idle
-2. **"Approval" history view**: the tab to the right of "Trajectory" in the session view switcher (`conversation.view`, order=20). Shows the **current session's** auto-approval timeline (**newest first**): ✅ + time + tool + justification + involved-file chips + verdict badge
+1. **Notice strip** (a dedicated row above the composer, `conversation.input.dock` order=30, does not scroll with the conversation):
+   - Auto-approval → green ✅: tool + summary + verdict label (allowlist / flash-safe / learned / confirmed / flash-same), auto-dismisses after 8s
+   - **Escalated to human → amber** (`--dsw-alias-state-warn-*`): "Waiting for human approval: <operation>", **stays until you decide**
+   - Human approved → amber "Learning n/N, auto-approves after N" (5s); rejected → red "Rejected · upgraded to always-human"
+   - No history notice when opening a session (cursor silently synchronized)
+2. **"Approval" history view**: the tab right of "Trajectory" (`conversation.view`, order=20). Current session records (**newest first**): auto-approved (green ✅), human-approved (amber + learning count n/N), human-rejected (red)
+3. **File diff & revert** (v0.5.0+): when an auto-approval involves files, the host saves a **pre-change snapshot** at approval time (before the write). In the history view the corresponding event's **file chips become clickable** (blue outline) and open a diff panel:
+   - **Changed lines only**: green `+` rows are additions, red `-` rows are deletions (classic diff semantics); the header shows +N / -M stats and unchanged-line count; a missing file is flagged
+   - **Revert this change**: posts a revert instruction to the conversation (operation, files, event time, snapshot directory) so the AI restores the files to their pre-approval state
+   - **Snapshot management**: the view header shows "diff snapshots <size> · <count>"; a "Clear diff history" button deletes all snapshots (data only — approval records stay; after clearing, historical files can no longer be diffed)
+   - Limits: only text files (≤256KB each, ≤5 per event) get snapshots; binary/oversized files are not clickable
 
-Data flow: the host appends a structured event to `~/.dsh/auto-approve/events.jsonl` on every auto-approval (`sessionId`/`tool`/`mode`/`reason`/`justification`/`verdict`/`files`); the browser polls `GET /api/auto-approve/events?sessionId=&since=` (2s incremental / 5s full refresh in the view).
+Data flow: the host appends a structured event to `~/.dsh/auto-approve/events.jsonl` per judgment (`kind`: auto / manual-pending / manual-approved / manual-rejected, plus sessionId/tool/mode/reason/justification/verdict/files/learningCount/threshold); the browser polls `GET /api/auto-approve/events?sessionId=&since=` (2s incremental / 5s full refresh in the view).
+
+## File Diff & Revert API (v0.5.0+)
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/auto-approve/diff?eventId=&path=` | GET | Changed lines (`changedLines`, add/del) and stats for an event/file; reads only paths listed in that event's snapshot |
+| `/api/auto-approve/revert` | POST | `{sessionId, eventId}` → assembles a revert instruction and delivers it to the session (typertGateway first, `agent.followup` fallback) |
+| `/api/auto-approve/snapshots-stats` | GET | Snapshot usage `{count, bytes, ids}` (ids = events that still have snapshots; drives chip clickability) |
+| `/api/auto-approve/snapshots-clear` | POST | Deletes all snapshot files (only `.json` inside `snapshots/`) |
+
+## Learning Semantics (v0.4.2+)
+
+Neutral confirmation learning: each human approval of the same tool|mode|category increments the count; after **N confirmations (default 3), the N+1th occurrence auto-approves** and persists a fingerprinted rule. In the threshold state: fingerprint hit auto-approves; otherwise Flash semantically verifies against confirmed samples (SAME approves / DIFFERENT goes to human); rejections upgrade to denyRules (always human); in-progress learning can be stopped from the settings page.
 
 ## Security Design
 
@@ -146,11 +169,13 @@ Data flow: the host appends a structured event to `~/.dsh/auto-approve/events.js
 - Mounted at the front of the `approval/request` waterfall (`prepend: true`, before the web answerer)
 - Gate: `permissionPresets.current(session.events) === 'auto-approve'`
 - DSH approval fires on sandbox escalation; `reason` is always `escalate sandbox to <mode>: <justification>`, with `mode` in `workspace-write` / `danger-full-access`
-- flash judgment: `reasoningEffort: 'off'` + `maxTokens: 64`, outputs `SAFE` or `RISKY:<category>`
+- flash judgment: `reasoningEffort: 'off'` + `maxTokens: 256`, outputs `SAFE` or `RISKY:<category>`
 - Timeout: `AbortController` signal into `llm.stream` (cancellable), `Promise.race` + `ctx.timeout(judgeTimeoutMs)`, abort + one retry
 - Similarity verification: current operation context + confirmed samples to flash (`SAME`/`DIFFERENT`); failure counts as DIFFERENT
 - Learning loop: captures human verdicts through the waterfall `next()` return (`allowed-once` persists / `rejected` upgrades)
 - Review UI: host writes `events.jsonl` + `GET /api/auto-approve/events` (sessionId filter + since cursor); client polls and renders
+- Snapshots & diff: approval happens before the write, so the auto-approval event saves `snapshots/<eventId>.json` at record time (text only, ≤256KB per file, ≤5 per event); diff uses approximate line matching and returns changed lines only (up to 500)
+- Revert delivery: `sendToSession` prefers `typertGateway.invoke({namespace:'session', method:'prompt'})` (queue mode), falling back to `agent.followup`
 
 ## License
 
