@@ -17,11 +17,25 @@ A Flash model pre-judges every sandbox escalation: routine operations auto-appro
 - 🔧 **Hot-reloadable config**: `allowlist.json` edits take effect immediately, no restart
 - ✅ **Human review UI**: a green notice appears above the composer on auto-approval; the "Approval" view (right of Trajectory) shows the current session's full auto-approval timeline
 
-## 📸 Screenshots
+## 📸 Interface Overview
 
-Auto-approval notice (in conversation) | Approval history view
-:---:|:---:
-![Auto-approval notice](docs/screenshots/approval-notice.png) | ![Approval history view](docs/screenshots/approval-history.png)
+### ① Approval View
+
+![Approval View](docs/screenshots/approval-view.png)
+
+The "Approval" tab (right of Trace) lists the current session's auto-allowed and manually-approved actions in reverse-chronological order: each record shows the tool (`bash` / `edit`), a verdict tag ("Auto-allowed · Flash safe", "Approved" etc.), timestamp and description. The top bar shows this session's **diff snapshot usage** (`2.9 KB · 3 items`) with two cleanup options: **"This session only"** (removes only the current session's snapshots, never touching other sessions' unviewed diffs) and **"Clear all"** (double-confirmed, clears every session).
+
+### ② File Diff
+
+![Diff Dialog](docs/screenshots/diff-panel.png)
+
+Click a file in an approval record to open the diff dialog: a **unified diff** with green additions (`+`), red deletions (`-`) and gray context lines; dual **old/new line numbers** on the left; multiple changes grouped into **hunks** with gray "`6 unmodified lines`" separators folding unchanged regions. The header shows `+2 / -2 changed · 20 unchanged`. The **Revert** button at the bottom sends an undo command to the conversation so the AI restores the file from the pre-approval snapshot.
+
+### ③ Settings · Auto-approval
+
+![Settings Auto-approval](docs/screenshots/settings-auto-approve.png)
+
+The "Auto-approval" section in Settings provides full configuration: **preset initialization** (one-click write of the `auto-approve` preset into `cordis.patch.yml`), **pipeline overview** (DENY → allowlist → denyRules → Flash → learning), **deny-keyword blacklist** (built-in entries + custom add), and hot-reload notes (changes take effect immediately, no restart).
 
 ## 🚀 Quick Start
 
