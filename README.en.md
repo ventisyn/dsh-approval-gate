@@ -12,6 +12,8 @@ A Flash model pre-judges every sandbox escalation: routine operations auto-appro
 - 🛡️ **Hard risks are always human**: deletion, credentials, remote/production, system paths, and bulk irreversible operations go directly to human — no counting, no learning
 - 🎯 **Confirmation-based learning**: after N-1 human confirmations of the same operation, it auto-approves; persisted rules carry an **operation fingerprint**, so only operations you confirmed are auto-approved
 - 🧠 **Semantic similarity verification**: operations with different wording but the same intent are judged by Flash against your confirmed samples — no keyword dependency
+- 📄 **File diff & revert** (v0.5.0+): click a file in an approval record to view a **unified diff** — changed lines with ±5 context lines, multiple changes grouped into hunks separated by gray "N unmodified lines" bars, green additions / red deletions / gray context, dual line numbers; one-click **Revert** sends a command for the AI to restore the file from snapshot
+- 🗂️ **Session-scoped snapshots** (v0.5.0+): snapshots belong to the event's session; the approval view shows only the current session's snapshot stats; clearing supports "this session only" vs "clear all" to avoid wiping other sessions' unviewed diffs
 - 🔧 **Hot-reloadable config**: `allowlist.json` edits take effect immediately, no restart
 - ✅ **Human review UI**: a green notice appears above the composer on auto-approval; the "Approval" view (right of Trajectory) shows the current session's full auto-approval timeline
 
