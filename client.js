@@ -441,6 +441,7 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState(null)
       const [snapStats, setSnapStats] = React.useState(null) // {count, bytes} | null
       const [snapIds, setSnapIds] = React.useState(null) // Set<eventId> | null（当前存在快照的事件）
+      const [snapFiles, setSnapFiles] = React.useState(null) // {eventId: [absPath,...]} | null（文件级 diff 可点击判断）
       const [diffOpen, setDiffOpen] = React.useState(null) // {eventId, path} | null
 
       const loadSnapStats = function (sid) {
@@ -451,6 +452,15 @@ window.__ModuleLoader__.load({
             if (!res || !res.ok) return
             setSnapStats({ count: res.count || 0, bytes: res.bytes || 0 })
             setSnapIds(new Set((res.ids || []).map(String)))
+            // 文件级映射：eventId → 该事件有快照的文件绝对路径列表
+            const fm = {}
+            if (res.files && typeof res.files === 'object') {
+              for (const k of Object.keys(res.files)) {
+                const arr = Array.isArray(res.files[k]) ? res.files[k] : []
+                if (arr.length > 0) fm[k] = arr.map(String)
+              }
+            }
+            setSnapFiles(fm)
           })
           .catch(function () {})
       }
@@ -470,7 +480,7 @@ window.__ModuleLoader__.load({
           body: JSON.stringify(body),
         }).then(function (r) { return r.json() }).then(function (res) {
           if (res && res.ok) {
-            if (mode === 'all') { setSnapStats({ count: 0, bytes: 0 }); setSnapIds(new Set()) }
+            if (mode === 'all') { setSnapStats({ count: 0, bytes: 0 }); setSnapIds(new Set()); setSnapFiles({}) }
             else loadSnapStats(sessionId)
           }
         }).catch(function () {})
@@ -535,7 +545,17 @@ window.__ModuleLoader__.load({
                   // pending（等待中）不在视图展示终态记录（提示条负责）
                   if (kind === 'manual-pending') return null
                   const files = Array.isArray(ev.files) ? ev.files : []
-                  const hasSnap = snapIds !== null && snapIds.has(String(ev.id))
+                  // 文件级快照判断：事件有快照 且 该文件在快照文件列表中
+                  // （ev.files 可能是相对/带 ~ 路径，快照 files 是绝对路径 → basename 匹配兜底）
+                  const snapPaths = (snapFiles && snapFiles[String(ev.id)]) || []
+                  const snapPathSet = new Set(snapPaths)
+                  const snapBaseSet = new Set(snapPaths.map(function (p) { return String(p).split('/').pop() }))
+                  const hasSnap = function (f) {
+                    if (snapIds === null || !snapIds.has(String(ev.id))) return false
+                    if (snapPathSet.has(String(f))) return true
+                    const base = String(f).split('/').pop()
+                    return base && snapBaseSet.has(base)
+                  }
                   let tagText = ''
                   let tagCls = 'ag-tag'
                   let glyph = React.createElement(GlyphCheck, null)
@@ -574,7 +594,7 @@ window.__ModuleLoader__.load({
                             files.map(function (f, i) {
                               // 该事件存在快照 → 文件可点击查看改动对比
                               const chipProps = { key: i, className: 'ag-file-chip' }
-                              if (hasSnap) {
+                              if (hasSnap(f)) {
                                 chipProps.className += ' ag-file-chip-snap'
                                 chipProps.title = '查看该文件改动对比'
                                 chipProps.role = 'button'

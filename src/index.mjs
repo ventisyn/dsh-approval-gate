@@ -103,6 +103,11 @@ function resolveAbsPath(p, baseDir) {
   return join(candidates[0] || process.cwd(), s)
 }
 
+/** 判断是否为设备/伪文件路径（/dev/*、/proc/*、/sys/*）——不保存快照 */
+function isDevicePath(absPath) {
+  return /^\/dev\//.test(absPath) || /^\/proc\//.test(absPath) || /^\/sys\//.test(absPath)
+}
+
 /** 保存事件涉及文件的快照（审批时 = 改动前内容） */
 function saveEventSnapshots(eventId, files, baseDir, sessionId) {
   const list = files || []
@@ -114,8 +119,12 @@ function saveEventSnapshots(eventId, files, baseDir, sessionId) {
     const abs = resolveAbsPath(f, baseDir)
     if (seen.has(abs)) continue
     seen.add(abs)
+    // 设备/伪文件（/dev/null 等）不保存快照
+    if (isDevicePath(abs)) continue
     const content = readSnapshotFile(abs)
     if (content === null) continue
+    // 空内容快照无 diff 意义（空 vs 空 无行），跳过
+    if (content === '') continue
     snapshots.push({ path: abs, content, ts: new Date().toISOString() })
   }
   if (snapshots.length === 0) return
@@ -314,9 +323,20 @@ function resolveToolCallFiles(callId, events) {
     else addPath(v)
     if (found.length >= 8) break
   }
-  // 2) bash/exec/run 等命令类：从 command 文本提取路径片段
+  // 2) bash/exec/run 等命令类：仅在命令含「写目标」时提取路径（读命令如 tail/ls/cat/grep 不产生文件改动，提取=假阳性）
   if (found.length === 0 && (args.command || args.cmd || args.script)) {
     const cmd = String(args.command || args.cmd || args.script || '')
+    // 剥离 stderr 抑制片段（2>/dev/null、2>&1 是读命令的常见写法，不代表写文件）
+    const cmdClean = cmd.replace(/2>>?\/dev\/null/g, ' ').replace(/2>&1/g, ' ')
+    // 写操作特征：写类命令词 / stdout 重定向 / 包管理器安装 / sed|perl -i / curl|wget 落盘
+    // （echo/printf 不在此列：纯输出不落盘，写文件场景由重定向正则覆盖，如 `echo x > file`）
+    const hasWrite = /(^|[;&|]\s*)(touch|cp|mv|rm|tee|mkdir|rmdir|install|dd|truncate|shred|chmod|chown|chgrp)\b/i.test(cmdClean)
+      || /(^|[;&|]\s*)(sed|perl|python|node|ruby)\b[^;|]*\s-i\b/i.test(cmdClean)
+      || /(^|[;&|]\s*)(curl|wget)\b[^;|]*\s(-o|--output|-O)\b/i.test(cmdClean)
+      || /(^|[;&|]\s*)(npm|pnpm|yarn|pip|pip3|gem|go|brew)\b[^;|]*\s(install|add|update|remove|uninstall)\b/i.test(cmdClean)
+      || />>?|&>/.test(cmdClean.replace(/[^<>=]/g, '').replace(/<<+/g, ''))
+    if (!hasWrite) return null
+    // 提取命令中出现的路径（写命令的参数 + 重定向目标；/dev/* 等设备由快照层过滤）
     for (const f of extractFiles(cmd)) {
       addPath(f)
       if (found.length >= 8) break
@@ -1008,6 +1028,7 @@ export default {
               let count = 0
               let bytes = 0
               const ids = []
+              const files = {} // eventId → 该事件快照中的文件绝对路径列表（文件级 diff 可点击判断）
               try {
                 for (const name of readdirSyncSafe(SNAPSHOTS_DIR)) {
                   if (!name.endsWith('.json')) continue
@@ -1017,9 +1038,15 @@ export default {
                   count++
                   ids.push(id)
                   try { bytes += statSyncSafe(join(SNAPSHOTS_DIR, name)) } catch { /* 跳过 */ }
+                  try {
+                    const data = JSON.parse(readFileSync(join(SNAPSHOTS_DIR, name), 'utf8'))
+                    if (Array.isArray(data.snapshots)) {
+                      files[id] = data.snapshots.map(function (s) { return String(s && s.path || '') }).filter(Boolean)
+                    }
+                  } catch { /* 快照文件损坏则忽略 */ }
                 }
               } catch { /* 目录不存在 */ }
-              send(res, 200, { ok: true, count, bytes, ids, sessionId: filterSession || null })
+              send(res, 200, { ok: true, count, bytes, ids, files, sessionId: filterSession || null })
             } catch (e) {
               send(res, 400, { ok: false, error: String((e && e.message) || e) })
             }
