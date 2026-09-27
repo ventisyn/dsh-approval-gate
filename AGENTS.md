@@ -21,7 +21,7 @@
 | --- | --- |
 | `src/index.mjs` | host 端插件：审批钩子、判定管道、学习、HTTP API、快照管理（约 1500 行，无依赖） |
 | `client.js` | 浏览器端 bundle，经 `window.__ModuleLoader__.load({ id: 'dsh-approval-gate', factory })` 注册 |
-| `cordis.patch.yml` | bundle patch：只负责 `insert` 插件行；`auto-approve` 预设必须由 profile 手动添加（动态插件无法扩展冻结的 presets 表） |
+| `cordis.patch.yml` | bundle patch：只负责 `insert` 插件行；`auto-approve` 预设由插件启动时自动写入 profile 的 `cordis.patch.yml`（运行时无法扩展冻结的 presets 表，见第 4 节） |
 | `package.json` | `main` / `exports`（`.` 与 `./client`）、`dsh.bundle.patch`、`dsh.client.platform = web` |
 | `docs/` | `GUIDE.md`、`GUIDE.en.md`、`VERIFY-*.md`、`screenshots/` |
 
@@ -52,7 +52,7 @@ if (preset !== PRESET_NAME) return next()
 
 | 文件 | 作用 |
 | --- | --- |
-| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `learning`；**改动即时生效（热更新）** |
+| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `learning` / `autoConfigurePreset`（预设自动写入开关）；**改动即时生效（热更新）** |
 | `learning.json` | 学习状态：`stats` 计数 + `history[key]` 人工确认样本 |
 | `audit.log` | 追加式决策流水：`ALLOW` / `HARD` / `RISKY` / `SAME` / `OUTCOME` / `LEARN` |
 | `events.jsonl` | UI 时间线数据源 |
@@ -70,6 +70,8 @@ GET  /api/auto-approve/snapshots-stats
 POST /api/auto-approve/snapshots-clear
 ```
 
+**权限预设自举（v1.1.0+）**：插件加载时若发现当前 profile 还没有 `auto-approve` 预设，会自动把它写进该 profile 的 `cordis.patch.yml`（文本级、保留注释），日志提示重启生效。profile 路径优先取运行时的 `profileContext.dir`，取不到才回退到固定路径。关闭：`allowlist.json` 的 `autoConfigurePreset: false`。任何失败只退回「人工配置」，不影响审批链路。
+
 ## 4. 与 DSH 版本的耦合点 ⚠️
 
 **分支名是完整版本号，profile 名只是其中的 harness 版本 —— 两者不再相等**，改动时必须分别对齐（当前：分支 `0.1.7-rc.2-v1.0.0`，profile `0.1.7-rc.2`）。
@@ -78,16 +80,17 @@ POST /api/auto-approve/snapshots-clear
 | --- | --- | --- |
 | 分支名 / 安装 ref | `0.1.7-rc.2-v1.0.0`（harness 版本 + 插件版本） | 每次发布新版本 → 从 dev 分支改名而来（第 10 节） |
 | `package.json` 的 `version` | `0.1.7-rc.2-v1.0.0`，与分支名一致 | 同上（第 11 节） |
-| `src/index.mjs` 的 `PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本** | 仅当换 harness 版本 |
+| `src/index.mjs` 的 `FALLBACK_PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本**；运行时优先用 `profileContext.dir` 解析，这是取不到时的兜底 | 仅当换 harness 版本 |
 
-`PROFILE_PATCH_PATH` 决定设置页「一键初始化预设」写哪个 profile 的 `cordis.patch.yml`；指向不存在的 profile 等于没配置（上游默认写死 `web`，与本机不符）。
+运行时优先用 `profileContext.dir` 拼出 profile 的 `cordis.patch.yml` —— 自动写入与设置页「一键初始化预设」都写这一个文件；`FALLBACK_PROFILE_PATCH_PATH` 只在取不到 `profileContext` 时兜底（上游默认写死 `web`，与本机不符）。
 
 ### 已知 API 漂移（已踩过）
 
 - **`permissionPresets.current()` 在 DSH 0.1.7-rc.2 的签名是 `current(session: Session)`。** 传 `session.events`（数组）会在内部 `sessionProjections.stateOf()` 处抛错，被本插件的 `try/catch` 吞掉后 `return next()` —— 表现为**插件加载完全正常、路由全部 200，但永远转人工**。
   - 诊断特征：`GET /api/auto-approve/events` 恒为 `{"events":[]}`，且 `$DSH_HOME/auto-approve/audit.log` **一直不生成**。
   - 排查入口：`node_modules/@deepseek-ai/dsh-permission-presets/lib/index.js` 的 `current()` / `permissionState()`；官方调用点是同包 `types/index.js` 里的 `this.current(agent.session)`。
-- DSH 0.1.7-rc.2 已提供 `permissionPresets.registerAuto(admit)` 与内置 `auto` 预设，是本插件后续更正规的接入点（当前实现硬编码 `auto-approve` 预设名）。
+- **不要改用 `permissionPresets.registerAuto(admit)`：对本插件是死路。** 内置 `auto` 的规格固定为 `sandbox: danger-full-access`（`AUTO_PRESET_SPEC`），而 `dsh-sandbox` 的 `approveEscalation()` 只在请求模式**严格宽于**当前模式时才发审批——切到 `auto` 后沙箱全开、不再产生越界请求，门控整条管道永远不会被触发。另外 `registerAuto` 是排他的（`autoAdmit !== undefined` 即抛错），会与官方 `dsh-experimental-auto-review` 抢同一个保留位。结论：`auto-approve` 只能走**配置层**（profile 的 `cordis.patch.yml`），本插件选择在启动时自动写入。
+- 参考：`dsh-base` 的 patch 头声明「后面的 bundle patch 与用户层可按 id 覆盖前面的行，last write wins per row，且整个 `config` 是整体替换而非合并」。理论上可以把预设写进本仓库的 bundle patch，但那要求重述整张 presets 表、会在 harness 升级时盖掉新预设，故未采用。
 
 ## 5. 开发环境
 
@@ -155,7 +158,7 @@ type[(scope)]: description
 | `ui` | `client.js` 的提示条与「审批」视图 |
 | `snapshot` | diff 快照与撤销 |
 | `api` | `/api/auto-approve/*` 路由 |
-| `preset` | `auto-approve` 预设与 `PROFILE_PATCH_PATH` 相关 |
+| `preset` | `auto-approve` 预设、启动时自动写入与 profile 路径解析 |
 | `deps` | DSH API 适配（版本漂移） |
 
 ### 描述
@@ -314,7 +317,7 @@ dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
 <harness 版本>-v<插件版本>          例如 0.1.7-rc.2-v1.0.0
 ```
 
-- **harness 版本**：`0.1.7-rc.2`。它同时是 **profile 目录名**（`~/.dsh/profiles/0.1.7-rc.2`）与 `PROFILE_PATCH_PATH` 里的那一段（第 4 节）。换 harness 版本 = 新开一条版本线。
+- **harness 版本**：`0.1.7-rc.2`。它同时是 **profile 目录名**（`~/.dsh/profiles/0.1.7-rc.2`）与 `FALLBACK_PROFILE_PATCH_PATH` 里的那一段（第 4 节）。换 harness 版本 = 新开一条版本线。
 - **插件版本**：`X.Y.Z`，本插件初代版本为 `v1.0.0`；跨 harness 版本**继续累加**，不重置。
 - **完整版本号**：写进 `package.json` 的 `version` —— **这是唯一真源**；它同时是**版本分支名**（第 10 节）与发布 tag `release/<完整版本号>` 的名字。不要在 README、源码或别处重复维护。
 
@@ -341,4 +344,4 @@ dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
 1. **开 dev 时**：把 `package.json` 的 `version` 提到目标完整版本号（例 `0.1.7-rc.2-v1.0.0 → 0.1.7-rc.2-v1.0.1`），提交 `chore: start 0.1.7-rc.2-v1.0.1`
 2. **验收改名后**：打 tag `git tag release/0.1.7-rc.2-v1.0.1` 并推送（加 `release/` 前缀是为了避开"分支名 = tag 名"导致的 `refname is ambiguous`）
 
-⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：新开版本分支 `0.1.8-v1.0.1`、同步改 `PROFILE_PATCH_PATH`（第 4 节），**插件版本继续累加**，不要重置回 v1.0.0。
+⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：新开版本分支 `0.1.8-v1.0.1`、同步改 `FALLBACK_PROFILE_PATCH_PATH`（第 4 节），**插件版本继续累加**，不要重置回 v1.0.0。

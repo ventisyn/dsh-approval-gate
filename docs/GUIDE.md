@@ -37,11 +37,15 @@ dsh plugin --profile web add dsh-approval-gate
 dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 ```
 
-## ⚠️ 安装后必须手动配置权限预设（关键步骤）
+## 权限预设：插件启动时自动配置（v1.1.0+）
 
-插件无法向权限预设表添加选项（预设表在配置构造时冻结），需要手动在 profile 的 `cordis.patch.yml` 中补一条 preset：
+插件无法在运行时向权限预设表注册具名预设（预设表在配置构造时冻结；内置 `auto` 是 DSH 保留位，且它是 danger-full-access，切过去就不会再有越界请求，门控会失效）。因此改由**插件启动时自动**把 `auto-approve` 预设写进当前 profile 的 `cordis.patch.yml`（文本级修改，保留注释格式）：
 
-编辑 `~/.dsh/profiles/web/cordis.patch.yml`，追加（或合并进已有的 `permission` 行——**loader 的 patch 会整体替换目标行的 config，若已有该行必须重述全部预设**）：
+- 首次写入后需要**重启 `dsh web`** 让预设进入权限下拉；已存在则不再写入。
+- 关闭自动写入：`allowlist.json` 设 `"autoConfigurePreset": false`；也可以在设置页「初始化权限预设」卡片手动写。
+- 自动写入只在缺失时补齐，不会改动文件中的其它内容；任何失败都只退回人工配置，不影响审批链路。
+
+自动写入失败或需要定制时，手动在 profile 的 `cordis.patch.yml` 中追加（或合并进已有的 `permission` 行——**loader 的 patch 会整体替换目标行的 config，若已有该行必须重述全部预设**）：
 
 ```yaml
 - id: permission
@@ -111,7 +115,7 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 
 DSH 设置面板新增「自动审批」分区（settings.section，样式与 DSH 原生设置一致），按管道顺序提供可视化规则管理，每张卡片标注管道阶段：
 
-- **初始化卡片**：检测 `cordis.patch.yml` 是否已含 auto-approve 权限预设；未配置时点「一键配置」自动写入（文本级修改，保留注释格式），重启后生效
+- **初始化卡片**：显示 auto-approve 预设是否已就位；插件启动时会自动写入（`allowlist.json` 的 `autoConfigurePreset=false` 可关闭），未配置时也可点「一键配置」手动写入（文本级修改，保留注释格式），重启后生效
 - **管道总览**：判定链路 + 生效的硬风险类别徽标
 - **① DENY 层 · 黑名单**（denyKeywords）：查看/添加/删除危险词（删除预置词有确认提示）
 - **② 白名单层 · 白名单**（allowRules）：查看（预置/学习沉淀/用户 来源标签）/添加（tool/mode/category/contains 表单）/删除 —— 例：`tool=edit, mode=danger-full-access` → 工作区外 edit 自动放行
