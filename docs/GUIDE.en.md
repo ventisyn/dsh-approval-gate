@@ -37,11 +37,15 @@ dsh plugin --profile web add dsh-approval-gate
 dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 ```
 
-## ⚠️ Manual permission preset (required after install)
+## Permission preset: configured automatically on startup (v1.1.0+)
 
-The plugin cannot extend the frozen permission-preset table; add the preset manually to the profile's `cordis.patch.yml`:
+The plugin cannot register a named preset at runtime (the preset table is frozen at composition time; the built-in `auto` is a DSH reserved slot, and it is `danger-full-access` — switching to it removes every escalation request, so the gate would never fire). Instead the plugin **writes the `auto-approve` preset into the current profile's `cordis.patch.yml` on startup** (text-level edit, comments preserved):
 
-Edit `~/.dsh/profiles/web/cordis.patch.yml` and append (or merge into the existing `permission` row — **the loader patch replaces the whole row's config, so restate every preset**):
+- The first write needs a **`dsh web` restart** before the preset appears in the permission picker; an existing preset is never rewritten.
+- Disable it with `"autoConfigurePreset": false` in `allowlist.json`, or write it by hand from the settings card.
+- The write only fills in what is missing and never touches the rest of the file; any failure falls back to manual configuration and never affects the approval pipeline.
+
+To configure it by hand (when the automatic write fails or you need a custom table), edit the profile's `cordis.patch.yml` and append (or merge into the existing `permission` row — **the loader patch replaces the whole row's config, so restate every preset**):
 
 ```yaml
 - id: permission
@@ -111,7 +115,7 @@ Select **"Auto Approval (Flash)"** in the session's permission dropdown (`/permi
 
 A new "Auto Approval" section in the DSH settings panel (`settings.section`, styled like native DSH settings) provides visual rule management, cards ordered by pipeline stage:
 
-- **Setup card**: detects whether the `auto-approve` permission preset exists in `cordis.patch.yml`; if missing, click "Configure" to write it automatically (text-level edit, comments preserved), effective after restart
+- **Setup card**: shows whether the `auto-approve` preset is in place; the plugin writes it automatically on startup (disable with `autoConfigurePreset=false` in `allowlist.json`), and you can also click "Configure" to write it by hand (text-level edit, comments preserved), effective after restart
 - **Pipeline overview**: judgment pipeline + active hard-risk category badges
 - **① DENY · deny list** (`denyKeywords`): view/add/remove dangerous keywords (removing a predefined keyword asks for confirmation)
 - **② Allow list** (`allowRules`): view (tagged predefined / learned / user) / add (tool/mode/category/contains form) / remove — e.g. `tool=edit, mode=danger-full-access` auto-approves out-of-workspace edits
