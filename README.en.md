@@ -57,6 +57,6 @@ MIT
 
 This project is a fork of [moon09300731/dsh-approval-gate](https://github.com/moon09300731/dsh-approval-gate):
 
-- Original copyright (c) 2026 **moon09300731**. The full license text is kept unmodified in [LICENSE](LICENSE).
+- Original copyright (c) 2026 **moon09300731**. The [LICENSE](LICENSE) keeps the original copyright notice and adds this fork's copyright line below it.
 - Adaptations for DeepSeek Harness 0.1.7-rc.2 in this fork are copyright (c) 2026 **Ventisyn**, also released under MIT.
 - Under MIT, anyone may use, modify and redistribute this project, provided the copyright and permission notices above are retained.
