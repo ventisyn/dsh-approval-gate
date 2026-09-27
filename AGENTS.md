@@ -72,11 +72,15 @@ POST /api/auto-approve/snapshots-clear
 
 ## 4. 与 DSH 版本的耦合点 ⚠️
 
-**本仓库按 DSH 版本开分支**，分支名就是该版本要装入的 profile 名（当前 `0.1.7-rc.2`）。以下三处必须一致，否则插件行为会错位：
+**分支名是完整版本号，profile 名只是其中的 harness 版本 —— 两者不再相等**，改动时必须分别对齐（当前：分支 `0.1.7-rc.2-v1.0.0`，profile `0.1.7-rc.2`）。
 
-1. 分支名，例如 `0.1.7-rc.2`
-2. `src/index.mjs` 里的 `PROFILE_PATCH_PATH` —— `join(DSH_HOME, 'profiles', '<profile>', 'cordis.patch.yml')`。设置页的「一键初始化预设」会写这个文件，指向错误的 profile 等于没配置
-3. 安装时用的 ref：`github:ventisyn/dsh-approval-gate#<分支名>`
+| 位置 | 取值 | 什么时候改 |
+| --- | --- | --- |
+| 分支名 / 安装 ref | `0.1.7-rc.2-v1.0.0`（harness 版本 + 插件版本） | 每次发布新版本 → 分支改名（第 10 节） |
+| `package.json` 的 `version` | `0.1.7-rc.2-v1.0.0`，与分支名一致 | 同上（第 11 节） |
+| `src/index.mjs` 的 `PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本** | 仅当换 harness 版本 |
+
+`PROFILE_PATCH_PATH` 决定设置页「一键初始化预设」写哪个 profile 的 `cordis.patch.yml`；指向不存在的 profile 等于没配置（上游默认写死 `web`，与本机不符）。
 
 ### 已知 API 漂移（已踩过）
 
@@ -95,7 +99,7 @@ POST /api/auto-approve/snapshots-clear
 
 ```powershell
 # git 引用（正式）
-dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2
+dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2-v1.0.0
 
 # 本地链接（开发期更快，改完重启/热加载即生效）
 dsh plugin --profile 0.1.7-rc.2 add link:D:\venti\Projects\VScodeProjects\javaScripProjects\dsh-approval-gate
@@ -199,29 +203,29 @@ chore: bump version to 0.1.7-rc.2-v1.0.1
 
 ## 10. 分支开发流程
 
-**任何对现有版本的修改都必须先开 `/dev` 分支，不在版本分支上直接改。**
+**任何对现有版本的修改都必须先开 `<完整版本号>/dev` 分支，不在版本分支上直接改。**
 
 ```
-0.1.7-rc.2         ← 版本分支：对应一个已验收的 harness 适配版本，只接受验收通过的合并
-0.1.7-rc.2/dev     ← 开发分支：所有改动先落这里
+0.1.7-rc.2-v1.0.0       ← 版本分支：名字 = 完整版本号，只接受验收通过的合并
+0.1.7-rc.2-v1.0.0/dev   ← 开发分支：所有改动先落这里
 ```
 
-命名规则就是 `<版本分支>/dev`；下一轮继续用同一个 `/dev`，不必每轮新建。
+命名规则固定为 `<完整版本号>/dev`；同一条版本线的下一轮继续用同一个 `/dev`，不必每轮新建。
 
 ### 开发流程
 
 ```powershell
-git checkout 0.1.7-rc.2
+git checkout 0.1.7-rc.2-v1.0.0
 git pull
-git checkout -b 0.1.7-rc.2/dev          # 首次才需要 -b，之后直接 checkout
+git checkout -b 0.1.7-rc.2-v1.0.0/dev     # 首次才需要 -b，之后直接 checkout
 
 # ...改代码...
 node --check src/index.mjs && node --check client.js
 
 # 按第 9 节自检清单实测：装进 profile → 重启 dsh web → 触发越界 → 看 events / audit.log
 
-git commit -m "fix(judge): ..."          # 提交规范见第 7 节，可以多条
-git push -u origin 0.1.7-rc.2/dev
+git commit -m "fix(judge): ..."            # 提交规范见第 7 节，可以多条
+git push -u origin 0.1.7-rc.2-v1.0.0/dev
 ```
 
 ### 验收与合回
@@ -229,26 +233,39 @@ git push -u origin 0.1.7-rc.2/dev
 **「验收」的定义就是第 9 节自检清单全部通过。没跑过实测的改动不许合回版本分支。**
 
 ```powershell
-git checkout 0.1.7-rc.2
-git merge --no-ff 0.1.7-rc.2/dev -m "chore: merge 0.1.7-rc.2/dev into 0.1.7-rc.2"
-git push origin 0.1.7-rc.2
+git checkout 0.1.7-rc.2-v1.0.0
+git merge --no-ff 0.1.7-rc.2-v1.0.0/dev -m "chore: merge 0.1.7-rc.2-v1.0.0/dev into 0.1.7-rc.2-v1.0.0"
+git push origin 0.1.7-rc.2-v1.0.0
 ```
 
 - 建议用 `--no-ff`，保留一个合并提交作为「这一版从 dev 合入」的记录；想保持线性历史则用 `--ff-only`。
-- 合并后 `/dev` 分支**保留**给下一轮继续用；整个 harness 版本不再维护时再删除。
+- 合并后 `/dev` 分支**保留**给下一轮继续用；整条版本线不再维护时再删除。
 - 紧急修复同样走 `/dev`，不要在版本分支上直接提交。
+
+### 发布新版本时分支要改名
+
+分支名里的插件版本必须跟着 `package.json` 的 `version` 走，所以每次发布新版本都要给版本分支**改名**（新建+删旧的做法容易漏掉 profile 引用）：
+
+```powershell
+git branch -m 0.1.7-rc.2-v1.0.0 0.1.7-rc.2-v1.0.1
+git push -u origin 0.1.7-rc.2-v1.0.1
+# GitHub 上先把默认分支切到新名（Settings → General → Default branch），否则删旧名会被拒绝
+git push origin --delete 0.1.7-rc.2-v1.0.0     # 提交仍在历史里，不会丢
+```
+
+`/dev` 分支同样跟着改名（`0.1.7-rc.2-v1.0.0/dev` → `0.1.7-rc.2-v1.0.1/dev`）。改名后记得把 profile 的安装 ref 一起更新（第 5 节）。
 
 ### 在 dev 分支上验证插件
 
 ```powershell
 # 方式一：从 dev 分支装（pnpm 按分支名解析 ref）
-dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2/dev
+dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2-v1.0.0/dev
 
 # 方式二（推荐，迭代最快）：链接本地工作副本，改完重启/热加载即生效
 dsh plugin --profile 0.1.7-rc.2 add link:D:\venti\Projects\VScodeProjects\javaScripProjects\dsh-approval-gate
 ```
 
-⚠️ 用方式一验证完，记得把 profile 切回版本分支的 ref（`#0.1.7-rc.2`），否则会一直跟着 dev 跑。
+⚠️ 用方式一验证完，记得把 profile 切回版本分支的 ref（`#0.1.7-rc.2-v1.0.0`），否则会一直跟着 dev 跑。
 
 ## 11. 版本号规范
 
@@ -258,9 +275,9 @@ dsh plugin --profile 0.1.7-rc.2 add link:D:\venti\Projects\VScodeProjects\javaSc
 <harness 版本>-v<插件版本>          例如 0.1.7-rc.2-v1.0.0
 ```
 
-- **harness 版本**：与分支名一致（`0.1.7-rc.2`）。换 harness 版本 = 开新版本分支（见第 4 节）。
+- **harness 版本**：`0.1.7-rc.2`。它同时是 **profile 目录名**（`~/.dsh/profiles/0.1.7-rc.2`）与 `PROFILE_PATCH_PATH` 里的那一段（第 4 节）。换 harness 版本 = 新开一条版本线。
 - **插件版本**：`X.Y.Z`，本插件初代版本为 `v1.0.0`。
-- **完整版本号**：写进 `package.json` 的 `version` 字段 —— **这是唯一真源**，不要在 README、源码或别处重复维护（git tag 与它同名，属于镜像而非第二真源）。
+- **完整版本号**：写进 `package.json` 的 `version` —— **这是唯一真源**；它同时是**版本分支名**（第 10 节）与发布 tag 名。不要在 README、源码或别处重复维护。
 
 ### X.Y.Z 的含义
 
@@ -274,18 +291,22 @@ dsh plugin --profile 0.1.7-rc.2 add link:D:\venti\Projects\VScodeProjects\javaSc
 
 - 格式 `X.Y.Z-expN`（例 `1.1.0-exp1`），**不占用正式版本号**，用于在 `/dev` 上反复试的改动。
 - 转正时正式版本的**修订版 +1**：`1.1.0-exp4 → 1.1.1`。实验版本号与它的 git tag **保留**，可回溯（双版号）。
-- 实验版本同样按完整版本号写进 `package.json`，即 `0.1.7-rc.2-v1.1.0-exp1`。
+- 实验版本同样按完整版本号写进 `package.json`，即 `0.1.7-rc.2-v1.1.0-exp1`；此时分支名保持不变（分支名跟的是**已发布**版本）。
 
 ### 发布一个版本
 
 ```powershell
-# 1) 在 /dev 上开发并实测，验收通过后合回版本分支（第 10 节）
+# 1) 在 /dev 上开发并实测，验收通过后合回版本分支（见上）
 # 2) 在版本分支上改 package.json 的 version
 #    例：0.1.7-rc.2-v1.0.0  →  0.1.7-rc.2-v1.0.1
 git commit -m "chore: bump version to 0.1.7-rc.2-v1.0.1"
-# 3) 打同名 tag 并推送
-git tag 0.1.7-rc.2-v1.0.1
-git push origin 0.1.7-rc.2 --tags
+# 3) 分支改名，让分支名与 version 一致
+git branch -m 0.1.7-rc.2-v1.0.0 0.1.7-rc.2-v1.0.1
+git push -u origin 0.1.7-rc.2-v1.0.1
+git push origin --delete 0.1.7-rc.2-v1.0.0
+# 4) 打 tag 留痕（同名分支 + 同名 tag 会让 git 报 refname is ambiguous，故加 release/ 前缀）
+git tag release/0.1.7-rc.2-v1.0.1
+git push origin --tags
 ```
 
-⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：开新版本分支 `0.1.8`、同步改 `PROFILE_PATCH_PATH`（第 4 节），**插件版本继续累加**（`0.1.8-v1.0.1`），不要重置回 v1.0.0。
+⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：开新版本线 `0.1.8-v1.0.1`、同步改 `PROFILE_PATCH_PATH`（第 4 节），**插件版本继续累加**，不要重置回 v1.0.0。
