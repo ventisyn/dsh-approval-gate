@@ -818,9 +818,11 @@ export default {
       const profileCtx = ctx.get('profileContext')
       if (profileCtx && typeof profileCtx.dir === 'string' && profileCtx.dir) {
         profilePatchPath = join(profileCtx.dir, 'cordis.patch.yml')
+      } else {
+        console.warn(`[${NAME}] profileContext 不可用，回退到兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`)
       }
     } catch (error) {
-      console.warn(`[${NAME}] 读取 profileContext 失败，使用兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`, error)
+      console.warn(`[${NAME}] 读取 profileContext 失败，回退到兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`, error)
     }
 
     // ---- 自动配置权限预设：装完即自举，免去手工编辑 profile ----
