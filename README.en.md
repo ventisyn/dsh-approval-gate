@@ -55,12 +55,8 @@ dsh plugin --profile web add dsh-approval-gate
 
 MIT
 
----
-
-## License & Credits
-
-This project is a fork of [moon09300731/dsh-approval-gate](https://github.com/moon09300731/dsh-approval-gate), released under the **MIT License**:
+This project is a fork of [moon09300731/dsh-approval-gate](https://github.com/moon09300731/dsh-approval-gate):
 
 - Original copyright (c) 2026 **moon09300731**. The full license text is kept unmodified in [LICENSE](LICENSE).
 - Adaptations for DeepSeek Harness 0.1.7-rc.2 in this fork are copyright (c) 2026 **Ventisyn**, also released under MIT.
-- Under MIT, anyone may use, modify and redistribute this project, provided the above copyright and permission notices are retained.
+- Under MIT, anyone may use, modify and redistribute this project, provided the copyright and permission notices above are retained.

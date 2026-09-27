@@ -55,12 +55,8 @@ dsh plugin --profile web add dsh-approval-gate
 
 MIT
 
----
+本项目是 [moon09300731/dsh-approval-gate](https://github.com/moon09300731/dsh-approval-gate) 的 fork：
 
-## 协议与致谢
-
-本项目是 [moon09300731/dsh-approval-gate](https://github.com/moon09300731/dsh-approval-gate) 的 fork，遵循 **MIT License**：
-
-- 原始版权归原作者 **moon09300731** 所有；完整许可条款见仓库根目录的 [LICENSE](LICENSE)，该文件保持原样未作修改。
+- 原始版权归原作者 **moon09300731** 所有；完整许可条款见 [LICENSE](LICENSE)，该文件保持原样、未作修改。
 - 本 fork 面向 DeepSeek Harness 0.1.7-rc.2 的适配与修改，版权归 **Ventisyn** 所有，同样以 MIT 协议发布。
 - 依据 MIT 协议，任何人可自由使用、修改、分发本项目，但**必须保留上述版权声明与许可声明**。
