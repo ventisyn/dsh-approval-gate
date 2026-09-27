@@ -238,10 +238,10 @@ const AUTO_APPROVE_PRESET_YAML = `      auto-approve:
         name: 自动审批（Flash）
         description: Flash 预判写入/命令是否不可回补：安全自动批准，有风险转人工审批。
 `
-// 无 permission 条目时追加的完整预设块
-const FULL_PERMISSION_BLOCK = `
-# ── 自动审批模式（dsh-approval-gate）─────────────────────────
-- id: permission
+// 预设块标题注释：文件里已有同一条时不再重复写（避免追加出两行一样的 banner）
+const PRESET_BANNER = '# ── 自动审批模式（dsh-approval-gate）─────────────────────────'
+// 无 permission 条目时追加的预设块正文（标题注释按需拼接）
+const FULL_PERMISSION_BLOCK = `- id: permission
   name: '@deepseek-ai/dsh-permission-presets'
   config:
     presets:
@@ -490,7 +490,8 @@ function ensureAutoApprovePreset() {
 
     if (permIdx === -1) {
       // 无 permission 条目：追加完整预设块
-      const next = text.replace(/\s*$/, '') + FULL_PERMISSION_BLOCK + AUTO_APPROVE_PRESET_YAML
+      const banner = text.includes(PRESET_BANNER) ? '' : PRESET_BANNER + '\n'
+      const next = text.replace(/\s*$/, '') + '\n' + banner + FULL_PERMISSION_BLOCK + AUTO_APPROVE_PRESET_YAML
       writeFileSync(profilePatchPath, next, 'utf8')
       return { ok: true, status: 'added-entry', needRestart: true }
     }
