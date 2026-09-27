@@ -42,8 +42,8 @@ const LEARNING_PATH = join(DATA_DIR, 'learning.json')
 const AUDIT_PATH = join(DATA_DIR, 'audit.log')
 const EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
 const SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
-// profile 的 cordis.patch.yml：运行时优先从 profileContext.dir 解析（换 harness 版本后无需改代码），
-// 兜底仍按 harness 版本拼路径（profile 目录名 == harness 版本，见 AGENTS.md 第 4 节）
+// profile 的 cordis.patch.yml：运行时优先取 profileContext.patchPath（loader 自己认的那个文件），
+// 其次 profileContext.dir 拼接，兜底才按 harness 版本拼路径（见 AGENTS.md 第 4 节）
 const FALLBACK_PROFILE_PATCH_PATH = join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')
 let profilePatchPath = FALLBACK_PROFILE_PATCH_PATH
 // 路径来源（profileContext.patchPath / profileContext.dir / fallback），暴露给 /setup 便于诊断
@@ -851,7 +851,7 @@ export default {
         } else {
           const state = getSetupState()
           if (state.configured) {
-            // 已就位：记录解析出的路径，便于确认 profileContext.dir 是否生效
+            // 已就位：记录解析出的路径与来源，便于确认 profileContext 是否生效
             console.log(`[${NAME}] 权限预设已就位：${state.patchPath}（来源 ${profilePatchSource}）`)
           } else {
             const result = ensureAutoApprovePreset()

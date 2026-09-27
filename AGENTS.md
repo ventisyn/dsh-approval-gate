@@ -63,14 +63,14 @@ if (preset !== PRESET_NAME) return next()
 ```
 GET  /api/auto-approve/events            # 支持 since= / sessionId= 增量
 GET  /api/auto-approve/rules
-GET  /api/auto-approve/setup             # { configured, patchPath }
+GET  /api/auto-approve/setup             # { configured, patchPath, patchPathSource, autoConfigurePreset }
 GET  /api/auto-approve/diff?eventId=&path=
 POST /api/auto-approve/revert
 GET  /api/auto-approve/snapshots-stats
 POST /api/auto-approve/snapshots-clear
 ```
 
-**权限预设自举（v1.1.0+）**：插件加载时若发现当前 profile 还没有 `auto-approve` 预设，会自动把它写进该 profile 的 `cordis.patch.yml`（文本级、保留注释），日志提示重启生效。profile 路径优先取运行时的 `profileContext.dir`，取不到才回退到固定路径。关闭：`allowlist.json` 的 `autoConfigurePreset: false`。任何失败只退回「人工配置」，不影响审批链路。
+**权限预设自举（v1.1.0+）**：插件加载时若发现当前 profile 还没有 `auto-approve` 预设，会自动把它写进该 profile 的 `cordis.patch.yml`（文本级、保留注释），日志提示重启生效。profile 路径优先取运行时的 `profileContext.patchPath`（loader 认的那个文件），其次 `profileContext.dir`，都取不到才回退固定路径；解析结果与来源见 `GET /api/auto-approve/setup` 的 `patchPath` / `patchPathSource`。关闭：`allowlist.json` 的 `autoConfigurePreset: false`。任何失败只退回「人工配置」，不影响审批链路。
 
 ## 4. 与 DSH 版本的耦合点 ⚠️
 
@@ -80,9 +80,9 @@ POST /api/auto-approve/snapshots-clear
 | --- | --- | --- |
 | 分支名 / 安装 ref | `0.1.7-rc.2-v1.0.0`（harness 版本 + 插件版本） | 每次发布新版本 → 从 dev 分支改名而来（第 10 节） |
 | `package.json` 的 `version` | `0.1.7-rc.2-v1.0.0`，与分支名一致 | 同上（第 11 节） |
-| `src/index.mjs` 的 `FALLBACK_PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本**；运行时优先用 `profileContext.dir` 解析，这是取不到时的兜底 | 仅当换 harness 版本 |
+| `src/index.mjs` 的 `FALLBACK_PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本**；运行时优先用 `profileContext.patchPath`，其次 `profileContext.dir`，这是两者都取不到时的兜底 | 仅当换 harness 版本 |
 
-运行时优先用 `profileContext.dir` 拼出 profile 的 `cordis.patch.yml` —— 自动写入与设置页「一键初始化预设」都写这一个文件；`FALLBACK_PROFILE_PATCH_PATH` 只在取不到 `profileContext` 时兜底（上游默认写死 `web`，与本机不符）。
+运行时优先用 `profileContext.patchPath`（`dsh-hmr` 的监听列表也用它），其次 `profileContext.dir` 拼接 —— 自动写入与设置页「一键初始化预设」都写这一个文件；`FALLBACK_PROFILE_PATCH_PATH` 只在 `profileContext` 取不到时兜底（上游默认写死 `web`，与本机不符）。
 
 ### 已知 API 漂移（已踩过）
 
