@@ -1,0 +1,5 @@
+chore: stop tracking AGENTS.md
+
+AGENTS.md holds machine-local notes (local paths, profile locations, dev
+commands) and should not be published. The file stays on disk; it is now
+gitignored instead.
