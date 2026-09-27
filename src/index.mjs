@@ -42,7 +42,12 @@ const LEARNING_PATH = join(DATA_DIR, 'learning.json')
 const AUDIT_PATH = join(DATA_DIR, 'audit.log')
 const EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
 const SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
-const PROFILE_PATCH_PATH = join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')
+// profile 的 cordis.patch.yml：运行时优先从 profileContext.dir 解析（换 harness 版本后无需改代码），
+// 兜底仍按 harness 版本拼路径（profile 目录名 == harness 版本，见 AGENTS.md 第 4 节）
+const FALLBACK_PROFILE_PATCH_PATH = join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')
+let profilePatchPath = FALLBACK_PROFILE_PATCH_PATH
+// 自动配置只在本进程内尝试一次：避免写入触发 profile 重载后再次写入，形成回环
+let presetAutoConfigured = false
 
 // 快照限制：单文件 ≤256KB、每事件 ≤5 个文件
 const SNAPSHOT_MAX_BYTES = 256 * 1024
@@ -436,7 +441,8 @@ function getRulesSnapshot() {
       hardCategories: config.hardCategories || [],
       riskyThreshold: config.riskyThreshold || 3,
       judgeTimeoutMs: config.judgeTimeoutMs || 20000,
-      learning: { enabled: learning.enabled !== false }
+      learning: { enabled: learning.enabled !== false },
+      autoConfigurePreset: config.autoConfigurePreset !== false
     },
     learning: {
       stats: learning.stats || {},
@@ -454,17 +460,26 @@ function getRulesSnapshot() {
 /** 检查权限预设是否已配置（供设置页初始化卡片） */
 function getSetupState() {
   try {
-    const text = readFileSync(PROFILE_PATCH_PATH, 'utf8')
-    return { configured: text.includes('auto-approve:'), patchPath: PROFILE_PATCH_PATH }
+    const text = readFileSync(profilePatchPath, 'utf8')
+    return {
+      configured: text.includes('auto-approve:'),
+      patchPath: profilePatchPath,
+      autoConfigurePreset: config.autoConfigurePreset !== false
+    }
   } catch (e) {
-    return { configured: false, patchPath: PROFILE_PATCH_PATH, error: String((e && e.message) || e) }
+    return {
+      configured: false,
+      patchPath: profilePatchPath,
+      autoConfigurePreset: config.autoConfigurePreset !== false,
+      error: String((e && e.message) || e)
+    }
   }
 }
 
 /** 一键初始化：在 cordis.patch.yml 中写入 auto-approve 权限预设（文本级操作，保留注释格式） */
 function ensureAutoApprovePreset() {
   try {
-    const text = readFileSync(PROFILE_PATCH_PATH, 'utf8')
+    const text = readFileSync(profilePatchPath, 'utf8')
     if (text.includes('auto-approve:')) return { ok: true, status: 'already', needRestart: false }
 
     const lines = text.split('\n')
@@ -476,7 +491,7 @@ function ensureAutoApprovePreset() {
     if (permIdx === -1) {
       // 无 permission 条目：追加完整预设块
       const next = text.replace(/\s*$/, '') + FULL_PERMISSION_BLOCK + AUTO_APPROVE_PRESET_YAML
-      writeFileSync(PROFILE_PATCH_PATH, next, 'utf8')
+      writeFileSync(profilePatchPath, next, 'utf8')
       return { ok: true, status: 'added-entry', needRestart: true }
     }
 
@@ -500,7 +515,7 @@ function ensureAutoApprovePreset() {
       if (/^\s*$/.test(line)) continue
     }
     lines.splice(insertAt + 1, 0, AUTO_APPROVE_PRESET_YAML.replace(/\n$/, ''))
-    writeFileSync(PROFILE_PATCH_PATH, lines.join('\n'), 'utf8')
+    writeFileSync(profilePatchPath, lines.join('\n'), 'utf8')
     return { ok: true, status: 'added-preset', needRestart: true }
   } catch (e) {
     return { ok: false, status: 'error', needRestart: false, error: String((e && e.message) || e) }
@@ -664,6 +679,7 @@ function normalizeConfig(raw) {
   cfg.riskyThreshold = cfg.riskyThreshold || 3
   cfg.judgeTimeoutMs = cfg.judgeTimeoutMs || 20000
   cfg.learning = cfg.learning || { enabled: true }
+  cfg.autoConfigurePreset = cfg.autoConfigurePreset !== false
   return cfg
 }
 
@@ -677,7 +693,8 @@ if (!config || typeof config !== 'object') {
     hardCategories: DEFAULT_HARD_CATEGORIES,
     riskyThreshold: 3,
     judgeTimeoutMs: 20000,
-    learning: { enabled: true }
+    learning: { enabled: true },
+    autoConfigurePreset: true
   }
   saveJson(ALLOWLIST_PATH, config)
 } else {
@@ -795,6 +812,46 @@ export default {
     const permissionPresets = ctx.permissionPresets
     const agentDefaultModel = ctx.get('agentDefaultModel')
     const PRESET_NAME = 'auto-approve'
+
+    // profile 的 cordis.patch.yml：优先用运行中的 profile 目录（换 harness 版本不用改代码）
+    try {
+      const profileCtx = ctx.get('profileContext')
+      if (profileCtx && typeof profileCtx.dir === 'string' && profileCtx.dir) {
+        profilePatchPath = join(profileCtx.dir, 'cordis.patch.yml')
+      }
+    } catch (error) {
+      console.warn(`[${NAME}] 读取 profileContext 失败，使用兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`, error)
+    }
+
+    // ---- 自动配置权限预设：装完即自举，免去手工编辑 profile ----
+    // 预设表在配置构造时冻结，运行时无法注册具名预设（内置 auto 是 DSH 保留位：它是
+    // danger-full-access，沙箱全开后不会再有越界请求，门控也就失效了，见 AGENTS.md 第 4 节）。
+    // 唯一可行的自动化就是替用户把预设写进 profile 的 cordis.patch.yml；
+    // 任何失败都只是退回「人工配置」，绝不影响审批链路本身。
+    if (!presetAutoConfigured) {
+      presetAutoConfigured = true
+      try {
+        reloadConfig()
+        if (config.autoConfigurePreset === false) {
+          console.log(`[${NAME}] 自动配置权限预设已关闭（allowlist.json: autoConfigurePreset=false）`)
+        } else {
+          const state = getSetupState()
+          if (state.configured) {
+            // 已就位：记录解析出的路径，便于确认 profileContext.dir 是否生效
+            console.log(`[${NAME}] 权限预设已就位：${state.patchPath}`)
+          } else {
+            const result = ensureAutoApprovePreset()
+            if (result.ok && result.needRestart) {
+              console.warn(`[${NAME}] 已自动写入 auto-approve 权限预设到 ${profilePatchPath}（status=${result.status}），重启 dsh web 后生效`)
+            } else if (!result.ok) {
+              console.warn(`[${NAME}] 自动写入 auto-approve 权限预设失败（status=${result.status}）：${result.error || '未知原因'}；可在设置页「初始化权限预设」手动处理`)
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`[${NAME}] 自动配置权限预设异常（已忽略，不影响审批）`, error)
+      }
+    }
 
     // ---- 自动放行事件 API（client 审查界面轮询；按会话过滤 + since 增量） ----
     let offEventsRoute = null
