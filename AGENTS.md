@@ -260,11 +260,17 @@ git push origin --delete <目标完整版本号>/dev
 git push -u origin <目标完整版本号>
 git tag release/<目标完整版本号>
 git push origin --tags
+
+# 把 GitHub 默认分支移到新版本：仓库首页与 git clone 默认取的就是它，停在旧版本等于
+# 向访客展示过时代码；而且默认分支无法被 --delete。Settings → General → Default branch，或：
+gh api -X PATCH repos/<owner>/<repo> -f default_branch=<目标完整版本号>
+
 # 下一轮再从头评估新的目标版本，开 <新目标版本>/dev
 ```
 
 要点：
 
+- **每次发布后把 GitHub 默认分支移到新版本**：仓库首页与 `git clone` 默认取的就是它，停在旧版本等于向访客展示过时代码（实测踩过：v1.1.0 发布后 default 仍停在 v1.0.0）。命令见第三步命令块末尾。
 - **先删远端 `/dev`，再推版本分支**：远端不能同时存在 `refs/heads/X` 与 `refs/heads/X/dev`（后者是前者的目录前缀），否则新建 `X` 会被 GitHub 以 `directory file conflict` 拒绝。实测踩过。
 - `/dev` 分支**同时只有一条**（就是当前正在开发的那个目标版本）；它改名成版本分支后，下一轮开新的。
 - 版本分支**只由 dev 改名产生**：不要直接在版本分支上提交，也不要为同一个版本另开分支。
