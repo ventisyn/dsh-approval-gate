@@ -332,7 +332,7 @@ dsh plugin --profile 0.1.7-rc.2 add link:D:\venti\Projects\VScodeProjects\javaSc
 
 - 格式 `X.Y.Z-expN`（例 `1.1.0-exp1`），**不占用正式版本号**，用于在 `/dev` 上反复试的改动。
 - 转正时正式版本的**修订版 +1**：`1.1.0-exp4 → 1.1.1`。实验版本号与它的 git tag **保留**，可回溯（双版号）。
-- 实验版本同样写进 @BT@package.json@BT@，即 @BT@0.1.7-rc.2-v1.1.0-exp1@BT@；此时 dev 分支名也用它（@BT@0.1.7-rc.2-v1.1.0-exp1/dev@BT@），转正时改名为正式版本分支（如 @BT@0.1.7-rc.2-v1.1.1@BT@）。
+- 实验版本同样写进 `package.json`，即 `0.1.7-rc.2-v1.1.0-exp1`；此时 dev 分支名也用它（`0.1.7-rc.2-v1.1.0-exp1/dev`），转正时改名为正式版本分支（如 `0.1.7-rc.2-v1.1.1`）。
 
 ### 版本号在流程里的位置
 
