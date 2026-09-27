@@ -3,3 +3,6 @@ node_modules/
 .DS_Store
 vision.env
 .dsh-vision.env
+
+# 本机 agent 说明，不随仓库发布
+AGENTS.md
