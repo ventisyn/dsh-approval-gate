@@ -46,6 +46,8 @@ const SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
 // 兜底仍按 harness 版本拼路径（profile 目录名 == harness 版本，见 AGENTS.md 第 4 节）
 const FALLBACK_PROFILE_PATCH_PATH = join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')
 let profilePatchPath = FALLBACK_PROFILE_PATCH_PATH
+// 路径来源（profileContext.patchPath / profileContext.dir / fallback），暴露给 /setup 便于诊断
+let profilePatchSource = 'fallback'
 // 自动配置只在本进程内尝试一次：避免写入触发 profile 重载后再次写入，形成回环
 let presetAutoConfigured = false
 
@@ -464,12 +466,14 @@ function getSetupState() {
     return {
       configured: text.includes('auto-approve:'),
       patchPath: profilePatchPath,
+      patchPathSource: profilePatchSource,
       autoConfigurePreset: config.autoConfigurePreset !== false
     }
   } catch (e) {
     return {
       configured: false,
       patchPath: profilePatchPath,
+      patchPathSource: profilePatchSource,
       autoConfigurePreset: config.autoConfigurePreset !== false,
       error: String((e && e.message) || e)
     }
@@ -817,12 +821,19 @@ export default {
     // profile 的 cordis.patch.yml：优先用运行中的 profile 目录（换 harness 版本不用改代码）
     try {
       const profileCtx = ctx.get('profileContext')
-      if (profileCtx && typeof profileCtx.dir === 'string' && profileCtx.dir) {
+      if (profileCtx && typeof profileCtx.patchPath === 'string' && profileCtx.patchPath) {
+        // patchPath 是 loader 自己认的那个文件（dsh-hmr 的监听列表也用它）
+        profilePatchPath = profileCtx.patchPath
+        profilePatchSource = 'profileContext.patchPath'
+      } else if (profileCtx && typeof profileCtx.dir === 'string' && profileCtx.dir) {
         profilePatchPath = join(profileCtx.dir, 'cordis.patch.yml')
+        profilePatchSource = 'profileContext.dir'
       } else {
+        profilePatchSource = 'fallback'
         console.warn(`[${NAME}] profileContext 不可用，回退到兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`)
       }
     } catch (error) {
+      profilePatchSource = 'fallback'
       console.warn(`[${NAME}] 读取 profileContext 失败，回退到兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`, error)
     }
 
@@ -841,11 +852,11 @@ export default {
           const state = getSetupState()
           if (state.configured) {
             // 已就位：记录解析出的路径，便于确认 profileContext.dir 是否生效
-            console.log(`[${NAME}] 权限预设已就位：${state.patchPath}`)
+            console.log(`[${NAME}] 权限预设已就位：${state.patchPath}（来源 ${profilePatchSource}）`)
           } else {
             const result = ensureAutoApprovePreset()
             if (result.ok && result.needRestart) {
-              console.warn(`[${NAME}] 已自动写入 auto-approve 权限预设到 ${profilePatchPath}（status=${result.status}），重启 dsh web 后生效`)
+              console.warn(`[${NAME}] 已自动写入 auto-approve 权限预设到 ${profilePatchPath}（status=${result.status}，来源 ${profilePatchSource}），重启 dsh web 后生效`)
             } else if (!result.ok) {
               console.warn(`[${NAME}] 自动写入 auto-approve 权限预设失败（status=${result.status}）：${result.error || '未知原因'}；可在设置页「初始化权限预设」手动处理`)
             }
