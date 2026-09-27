@@ -76,7 +76,7 @@ POST /api/auto-approve/snapshots-clear
 
 | 位置 | 取值 | 什么时候改 |
 | --- | --- | --- |
-| 分支名 / 安装 ref | `0.1.7-rc.2-v1.0.0`（harness 版本 + 插件版本） | 每次发布新版本 → 新建版本分支（第 10 节） |
+| 分支名 / 安装 ref | `0.1.7-rc.2-v1.0.0`（harness 版本 + 插件版本） | 每次发布新版本 → 从 dev 分支改名而来（第 10 节） |
 | `package.json` 的 `version` | `0.1.7-rc.2-v1.0.0`，与分支名一致 | 同上（第 11 节） |
 | `src/index.mjs` 的 `PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本** | 仅当换 harness 版本 |
 
@@ -203,51 +203,65 @@ chore: bump version to 0.1.7-rc.2-v1.0.1
 
 ## 10. 分支开发流程
 
-**每个已发布的完整版本对应一条版本分支**（分支名 = 完整版本号）。开发在它下面的 `/dev` 分支上进行，验收通过后合入版本分支；旧版本分支按下面的保留策略处理。
+**每个已发布的完整版本对应一条版本分支**（分支名 = 完整版本号）。改动先落在**以目标版本命名**的 `/dev` 分支上，验收通过后**把 dev 改名成版本分支**即可发布。
 
 ```
-0.1.7-rc.2-v1.0.0       ← 已发布的版本分支
-0.1.7-rc.2-v1.0.0/dev   ← 当前开发分支（跟随最新已发布版本）
+0.1.7-rc.2-v1.0.0        ← 已发布的版本分支（旧分支按保留策略处理）
+0.1.7-rc.2-v1.0.1/dev    ← 正在开发的目标版本（尚未发布）
 ```
 
-### 日常开发
+### 第一步：先评估目标版本号
+
+**开工前就要定下这一轮要发布的版本号** —— 因为分支名从此就是目标版本号：
+
+| 改动性质 | 目标版本（以 `v1.0.0` 为例） |
+| --- | --- |
+| bug 修复 | `v1.0.1`（Z +1） |
+| 向后兼容的新功能 | `v1.1.0`（Y +1，Z 归零） |
+| 破坏性变更 | `v2.0.0`（X +1，Y、Z 归零） |
+
+完整规则见第 11 节。**评错了就改名重来**（`git branch -m`），不要带着错的版号继续开发。
+
+### 第二步：开 dev 分支并开发
 
 ```powershell
 git checkout 0.1.7-rc.2-v1.0.0
 git pull
-git checkout 0.1.7-rc.2-v1.0.0/dev        # 第一次用 -b 创建，之后直接 checkout
+git checkout -b 0.1.7-rc.2-v1.0.1/dev      # 名字 = <目标完整版本号>/dev
+
+# 顺手把版本号提到目标版本（唯一真源，见第 11 节）：
+#   package.json  ->  "version": "0.1.7-rc.2-v1.0.1"
+git commit -am "chore: start 0.1.7-rc.2-v1.0.1"
 
 # ...改代码...
 node --check src/index.mjs && node --check client.js
 
 # 按第 9 节自检清单实测：装进 profile → 重启 dsh web → 触发越界 → 看 events / audit.log
 
-git commit -m "fix(judge): ..."            # 提交规范见第 7 节，可以多条
-git push -u origin 0.1.7-rc.2-v1.0.0/dev
+git commit -m "fix(judge): ..."             # 规范见第 7 节，可以多条
+git push -u origin 0.1.7-rc.2-v1.0.1/dev
 ```
 
-### 发布新版本（新建版本分支，不改名）
+### 第三步：验收通过后改名成版本分支
+
+**「验收」的定义就是第 9 节自检清单全部通过。没跑过实测的改动不许改名发布。**
 
 ```powershell
-# 0) dev 上已开发完且验收通过（第 9 节清单全过）
-# 1) 以最新版本分支为基线，新建下一条版本分支
-git checkout 0.1.7-rc.2-v1.0.0
-git checkout -b 0.1.7-rc.2-v1.0.1
-# 2) 合入 dev
-git merge --no-ff 0.1.7-rc.2-v1.0.0/dev -m "chore: merge 0.1.7-rc.2-v1.0.0/dev into 0.1.7-rc.2-v1.0.1"
-# 3) 改 package.json 的 version 并提交
-git commit -am "chore: bump version to 0.1.7-rc.2-v1.0.1"
-# 4) 打 tag + 推送
+git checkout 0.1.7-rc.2-v1.0.1/dev
+git branch -m 0.1.7-rc.2-v1.0.1/dev 0.1.7-rc.2-v1.0.1    # 改名 = 发布，dev 名消失
+git push -u origin 0.1.7-rc.2-v1.0.1
+git push origin --delete 0.1.7-rc.2-v1.0.1/dev
 git tag release/0.1.7-rc.2-v1.0.1
-git push -u origin 0.1.7-rc.2-v1.0.1 --tags
-# 5) dev 分支改名跟随新版本
-git branch -m 0.1.7-rc.2-v1.0.0/dev 0.1.7-rc.2-v1.0.1/dev
-git push -u origin 0.1.7-rc.2-v1.0.1/dev
-git push origin --delete 0.1.7-rc.2-v1.0.0/dev
-# 6) 按下面的保留策略清理旧版本分支
+git push origin --tags
+# 下一轮再从头评估新的目标版本，开 <新目标版本>/dev
 ```
 
-注意 `/dev` 分支始终只有一条，名字跟随**最新已发布版本**；它自己不进保留策略。
+要点：
+
+- `/dev` 分支**同时只有一条**（就是当前正在开发的那个目标版本）；它改名成版本分支后，下一轮开新的。
+- 版本分支**只由 dev 改名产生**：不要直接在版本分支上提交，也不要为同一个版本另开分支。
+- 版本号在 dev 的**第一个提交**里就提到目标版本；中途若改动性质变化（如从修复变成新功能），先 `git branch -m` 改成新目标版本名，再改 `package.json`。
+- 改名发布之后再按下面的保留策略清理旧版本分支。
 
 ### 版本分支保留策略
 
@@ -284,7 +298,7 @@ git push origin --delete 0.1.7-rc.2-v1.0.0/dev
 
 ```powershell
 # 方式一：从 dev 分支装（pnpm 按分支名解析 ref）
-dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2-v1.0.0/dev
+dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2-v1.0.1/dev
 
 # 方式二（推荐，迭代最快）：链接本地工作副本，改完重启/热加载即生效
 dsh plugin --profile 0.1.7-rc.2 add link:D:\venti\Projects\VScodeProjects\javaScripProjects\dsh-approval-gate
@@ -318,14 +332,13 @@ dsh plugin --profile 0.1.7-rc.2 add link:D:\venti\Projects\VScodeProjects\javaSc
 
 - 格式 `X.Y.Z-expN`（例 `1.1.0-exp1`），**不占用正式版本号**，用于在 `/dev` 上反复试的改动。
 - 转正时正式版本的**修订版 +1**：`1.1.0-exp4 → 1.1.1`。实验版本号与它的 git tag **保留**，可回溯（双版号）。
-- 实验版本同样写进 `package.json`，即 `0.1.7-rc.2-v1.1.0-exp1`；此时**不开版本分支**（版本分支只对应已发布版本）。
+- 实验版本同样写进 @BT@package.json@BT@，即 @BT@0.1.7-rc.2-v1.1.0-exp1@BT@；此时 dev 分支名也用它（@BT@0.1.7-rc.2-v1.1.0-exp1/dev@BT@），转正时改名为正式版本分支（如 @BT@0.1.7-rc.2-v1.1.1@BT@）。
 
-### 发布时与版本号有关的动作
+### 版本号在流程里的位置
 
-完整流程见第 10 节，这里只列版本号本身：
+完整流程见第 10 节，与版本号有关的只有两步：
 
-1. 改 `package.json` 的 `version` 为新完整版本号（例 `0.1.7-rc.2-v1.0.0 → 0.1.7-rc.2-v1.0.1`），提交：
-   `chore: bump version to 0.1.7-rc.2-v1.0.1`
-2. 打 tag：`git tag release/0.1.7-rc.2-v1.0.1`（加 `release/` 前缀是为了避开"分支名 = tag 名"导致的 `refname is ambiguous`）
+1. **开 dev 时**：把 `package.json` 的 `version` 提到目标完整版本号（例 `0.1.7-rc.2-v1.0.0 → 0.1.7-rc.2-v1.0.1`），提交 `chore: start 0.1.7-rc.2-v1.0.1`
+2. **验收改名后**：打 tag `git tag release/0.1.7-rc.2-v1.0.1` 并推送（加 `release/` 前缀是为了避开"分支名 = tag 名"导致的 `refname is ambiguous`）
 
 ⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：新开版本分支 `0.1.8-v1.0.1`、同步改 `PROFILE_PATCH_PATH`（第 4 节），**插件版本继续累加**，不要重置回 v1.0.0。
