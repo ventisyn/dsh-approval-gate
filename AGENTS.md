@@ -74,12 +74,12 @@ POST /api/auto-approve/snapshots-clear
 
 ## 4. 与 DSH 版本的耦合点 ⚠️
 
-**分支名是完整版本号，profile 名只是其中的 harness 版本 —— 两者不再相等**，改动时必须分别对齐（当前：分支 `0.1.7-rc.2-v1.0.0`，profile `0.1.7-rc.2`）。
+**分支名是完整版本号，profile 名只是其中的 harness 版本 —— 两者不再相等**，改动时必须分别对齐（当前 profile 名 `0.1.7-rc.2`；版本分支名等于 `package.json` 的 `version`，用 `git branch` 现查 —— 本文件不复述具体版本号，避免每次发布都腐烂）。
 
 | 位置 | 取值 | 什么时候改 |
 | --- | --- | --- |
-| 分支名 / 安装 ref | `0.1.7-rc.2-v1.0.0`（harness 版本 + 插件版本） | 每次发布新版本 → 从 dev 分支改名而来（第 10 节） |
-| `package.json` 的 `version` | `0.1.7-rc.2-v1.0.0`，与分支名一致 | 同上（第 11 节） |
+| 分支名 / 安装 ref | `<harness 版本>-v<插件版本>`，与 `package.json` 的 `version` 完全一致 | 每次发布新版本 → 从 dev 分支改名而来（第 10 节） |
+| `package.json` 的 `version` | 完整版本号 `<harness 版本>-v<插件版本>`，与分支名一致 —— **唯一真源**（第 11 节） | 同上（第 11 节） |
 | `src/index.mjs` 的 `FALLBACK_PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本**；运行时优先用 `profileContext.patchPath`，其次 `profileContext.dir`，这是两者都取不到时的兜底 | 仅当换 harness 版本 |
 
 运行时优先用 `profileContext.patchPath`（`dsh-hmr` 的监听列表也用它），其次 `profileContext.dir` 拼接 —— 自动写入与设置页「一键初始化预设」都写这一个文件；`FALLBACK_PROFILE_PATCH_PATH` 只在 `profileContext` 取不到时兜底（上游默认写死 `web`，与本机不符）。
@@ -102,7 +102,7 @@ POST /api/auto-approve/snapshots-clear
 
 ```powershell
 # git 引用（正式）
-dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2-v1.0.0
+dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#<已发布的完整版本号>
 
 # 本地链接（开发期更快，改完重启/热加载即生效）
 dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
@@ -209,8 +209,8 @@ chore: bump version to 0.1.7-rc.2-v1.0.1
 **每个已发布的完整版本对应一条版本分支**（分支名 = 完整版本号）。改动先落在**以目标版本命名**的 `/dev` 分支上，验收通过后**把 dev 改名成版本分支**即可发布。
 
 ```
-0.1.7-rc.2-v1.0.0        ← 已发布的版本分支（旧分支按保留策略处理）
-0.1.7-rc.2-v1.0.1/dev    ← 正在开发的目标版本（尚未发布）
+<已发布的完整版本号>          ← 已发布的版本分支（旧分支按保留策略处理）
+<目标完整版本号>/dev         ← 正在开发的目标版本（尚未发布）
 ```
 
 ### 第一步：先评估目标版本号
@@ -228,13 +228,13 @@ chore: bump version to 0.1.7-rc.2-v1.0.1
 ### 第二步：开 dev 分支并开发
 
 ```powershell
-git checkout 0.1.7-rc.2-v1.0.0
+git checkout <已发布的完整版本号>          # 上一条版本分支
 git pull
-git checkout -b 0.1.7-rc.2-v1.0.1/dev      # 名字 = <目标完整版本号>/dev
+git checkout -b <目标完整版本号>/dev      # 名字 = <目标完整版本号>/dev
 
 # 顺手把版本号提到目标版本（唯一真源，见第 11 节）：
-#   package.json  ->  "version": "0.1.7-rc.2-v1.0.1"
-git commit -am "chore: start 0.1.7-rc.2-v1.0.1"
+#   package.json  ->  "version": "<目标完整版本号>"
+git commit -am "chore: start <目标完整版本号>"
 
 # ...改代码...
 node --check src/index.mjs && node --check client.js
@@ -242,7 +242,7 @@ node --check src/index.mjs && node --check client.js
 # 按第 9 节自检清单实测：装进 profile → 重启 dsh web → 触发越界 → 看 events / audit.log
 
 git commit -m "fix(judge): ..."             # 规范见第 7 节，可以多条
-git push -u origin 0.1.7-rc.2-v1.0.1/dev
+git push -u origin <目标完整版本号>/dev
 ```
 
 ### 第三步：验收通过后改名成版本分支
@@ -250,15 +250,15 @@ git push -u origin 0.1.7-rc.2-v1.0.1/dev
 **「验收」的定义就是第 9 节自检清单全部通过。没跑过实测的改动不许改名发布。**
 
 ```powershell
-git checkout 0.1.7-rc.2-v1.0.1/dev
-git branch -m 0.1.7-rc.2-v1.0.1/dev 0.1.7-rc.2-v1.0.1    # 改名 = 发布，dev 名消失
+git checkout <目标完整版本号>/dev
+git branch -m <目标完整版本号>/dev <目标完整版本号>    # 改名 = 发布，dev 名消失
 
 # ⚠️ 先删远端 dev，再推版本分支。版本分支名是 dev 名字的前缀，远端不能同时存在
 # refs/heads/X 与 refs/heads/X/dev —— 否则 GitHub 以 directory file conflict 拒绝。
 # 删掉的提交仍在本地，真删错了重推即可。
-git push origin --delete 0.1.7-rc.2-v1.0.1/dev
-git push -u origin 0.1.7-rc.2-v1.0.1
-git tag release/0.1.7-rc.2-v1.0.1
+git push origin --delete <目标完整版本号>/dev
+git push -u origin <目标完整版本号>
+git tag release/<目标完整版本号>
 git push origin --tags
 # 下一轮再从头评估新的目标版本，开 <新目标版本>/dev
 ```
@@ -306,13 +306,13 @@ git push origin --tags
 
 ```powershell
 # 方式一：从 dev 分支装（pnpm 按分支名解析 ref）
-dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#0.1.7-rc.2-v1.0.1/dev
+dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#<目标完整版本号>/dev
 
 # 方式二（推荐，迭代最快）：链接本地工作副本，改完重启/热加载即生效
 dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
 ```
 
-⚠️ 用方式一验证完，记得把 profile 切回版本分支的 ref（`#0.1.7-rc.2-v1.0.0`），否则会一直跟着 dev 跑。
+⚠️ 用方式一验证完，记得把 profile 切回**已发布版本分支**的 ref（`#<已发布的完整版本号>`），否则会一直跟着 dev 跑。
 
 ## 11. 版本号规范
 
