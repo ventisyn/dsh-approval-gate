@@ -252,8 +252,12 @@ git push -u origin 0.1.7-rc.2-v1.0.1/dev
 ```powershell
 git checkout 0.1.7-rc.2-v1.0.1/dev
 git branch -m 0.1.7-rc.2-v1.0.1/dev 0.1.7-rc.2-v1.0.1    # 改名 = 发布，dev 名消失
-git push -u origin 0.1.7-rc.2-v1.0.1
+
+# ⚠️ 先删远端 dev，再推版本分支。版本分支名是 dev 名字的前缀，远端不能同时存在
+# refs/heads/X 与 refs/heads/X/dev —— 否则 GitHub 以 directory file conflict 拒绝。
+# 删掉的提交仍在本地，真删错了重推即可。
 git push origin --delete 0.1.7-rc.2-v1.0.1/dev
+git push -u origin 0.1.7-rc.2-v1.0.1
 git tag release/0.1.7-rc.2-v1.0.1
 git push origin --tags
 # 下一轮再从头评估新的目标版本，开 <新目标版本>/dev
@@ -261,6 +265,7 @@ git push origin --tags
 
 要点：
 
+- **先删远端 `/dev`，再推版本分支**：远端不能同时存在 `refs/heads/X` 与 `refs/heads/X/dev`（后者是前者的目录前缀），否则新建 `X` 会被 GitHub 以 `directory file conflict` 拒绝。实测踩过。
 - `/dev` 分支**同时只有一条**（就是当前正在开发的那个目标版本）；它改名成版本分支后，下一轮开新的。
 - 版本分支**只由 dev 改名产生**：不要直接在版本分支上提交，也不要为同一个版本另开分支。
 - 版本号在 dev 的**第一个提交**里就提到目标版本；中途若改动性质变化（如从修复变成新功能），先 `git branch -m` 改成新目标版本名，再改 `package.json`。
