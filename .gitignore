@@ -4,3 +4,7 @@ node_modules/
 vision.env
 .dsh-vision.env
 *.tmp
+
+# 本机出现的杂散目录：某组件以工作区为 cwd 写入 Windows 图标缓存，
+# 而 %SystemDrive% 在 PowerShell 里不会被展开，于是落成相对路径。
+%SystemDrive%/
