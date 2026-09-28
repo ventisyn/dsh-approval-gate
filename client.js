@@ -725,13 +725,14 @@ window.__ModuleLoader__.load({
             React.createElement('div', { className: 'ag-set-card-title' }, '初始化权限预设'),
             React.createElement('p', { className: 'ag-set-card-sub' },
               '插件启动时会自动把 auto-approve 预设写进 profile 的 cordis.patch.yml（预设表在配置构造时冻结，运行时无法注册具名预设）。' +
-              (setup.configured ? '当前已配置 ✓' : '当前未检测到，可一键写入。') +
+              (!setup.patchPath ? '当前无法确定 profile 路径，请手动配置。'
+                : setup.configured ? '当前已配置 ✓' : '当前未检测到，可一键写入。') +
               (setup.autoConfigurePreset === false ? '（自动配置已在 allowlist.json 中关闭）' : ''))),
           React.createElement('div', { className: 'ag-set-row' },
             React.createElement('button', {
               type: 'button',
               className: 'ag-set-btn' + (setup.configured ? '' : ' ag-set-btn-primary'),
-              disabled: busy,
+              disabled: busy || !setup.patchPath,
               onClick: setupNow,
             }, setup.configured ? '重新检查' : '一键配置权限预设'),
             !setup.configured ? React.createElement('span', { className: 'ag-set-note' }, '写入后需重启 dsh web 生效') : null,
