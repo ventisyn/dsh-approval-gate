@@ -42,12 +42,15 @@ const LEARNING_PATH = join(DATA_DIR, 'learning.json')
 const AUDIT_PATH = join(DATA_DIR, 'audit.log')
 const EVENTS_PATH = join(DATA_DIR, 'events.jsonl')
 const SNAPSHOTS_DIR = join(DATA_DIR, 'snapshots')
-// profile 的 cordis.patch.yml：运行时优先取 profileContext.patchPath（loader 自己认的那个文件），
-// 其次 profileContext.dir 拼接，兜底才按 harness 版本拼路径（见 AGENTS.md 第 4 节）
-const FALLBACK_PROFILE_PATCH_PATH = join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')
-let profilePatchPath = FALLBACK_PROFILE_PATCH_PATH
-// 路径来源（profileContext.patchPath / profileContext.dir / fallback），暴露给 /setup 便于诊断
-let profilePatchSource = 'fallback'
+// profile 的 cordis.patch.yml：运行时按下面三级解析，**不写死实例名**（profile 名可能被改成别的）。
+//   1) profileContext.patchPath —— loader 自己认的那个文件（最权威）
+//   2) profileContext.dir + cordis.patch.yml
+//   3) 进程命令行 --profile <name> → DSH_HOME/profiles/<name>/cordis.patch.yml
+// 三级都拿不到时**不写**：宁可不自动配置，也不能猜一个实例、改到别人的 profile 配置上。
+const PROFILE_PATCH_FILENAME = 'cordis.patch.yml'
+let profilePatchPath = null
+// 路径来源（profileContext.patchPath / profileContext.dir / argv --profile / unresolved），暴露给 /setup 便于诊断
+let profilePatchSource = 'unresolved'
 // 自动配置只在本进程内尝试一次：避免写入触发 profile 重载后再次写入，形成回环
 let presetAutoConfigured = false
 
@@ -459,29 +462,45 @@ function getRulesSnapshot() {
   }
 }
 
+/** 从进程命令行解析 `--profile <name>`；解析不到或名字不合法时返回空串 */
+function profileNameFromArgv(argv) {
+  let name = ''
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--profile') name = argv[i + 1] || ''
+    else if (arg.startsWith('--profile=')) name = arg.slice('--profile='.length)
+  }
+  // 只接受普通实例名，避免拼出奇怪路径
+  return /^[A-Za-z0-9._-]+$/.test(name) ? name : ''
+}
+
 /** 检查权限预设是否已配置（供设置页初始化卡片） */
 function getSetupState() {
+  const base = {
+    configured: false,
+    patchPath: profilePatchPath,
+    patchPathSource: profilePatchSource,
+    autoConfigurePreset: config.autoConfigurePreset !== false
+  }
+  if (!profilePatchPath) return { ...base, error: '无法确定当前 profile 的 cordis.patch.yml' }
   try {
     const text = readFileSync(profilePatchPath, 'utf8')
-    return {
-      configured: text.includes('auto-approve:'),
-      patchPath: profilePatchPath,
-      patchPathSource: profilePatchSource,
-      autoConfigurePreset: config.autoConfigurePreset !== false
-    }
+    return { ...base, configured: text.includes('auto-approve:') }
   } catch (e) {
-    return {
-      configured: false,
-      patchPath: profilePatchPath,
-      patchPathSource: profilePatchSource,
-      autoConfigurePreset: config.autoConfigurePreset !== false,
-      error: String((e && e.message) || e)
-    }
+    return { ...base, error: String((e && e.message) || e) }
   }
 }
 
 /** 一键初始化：在 cordis.patch.yml 中写入 auto-approve 权限预设（文本级操作，保留注释格式） */
 function ensureAutoApprovePreset() {
+  if (!profilePatchPath) {
+    return {
+      ok: false,
+      status: 'unresolved-profile',
+      needRestart: false,
+      error: '无法确定当前 profile 的 cordis.patch.yml，请在 profile 配置里手动添加 auto-approve 预设'
+    }
+  }
   try {
     const text = readFileSync(profilePatchPath, 'utf8')
     if (text.includes('auto-approve:')) return { ok: true, status: 'already', needRestart: false }
@@ -826,15 +845,25 @@ export default {
         profilePatchPath = profileCtx.patchPath
         profilePatchSource = 'profileContext.patchPath'
       } else if (profileCtx && typeof profileCtx.dir === 'string' && profileCtx.dir) {
-        profilePatchPath = join(profileCtx.dir, 'cordis.patch.yml')
+        profilePatchPath = join(profileCtx.dir, PROFILE_PATCH_FILENAME)
         profilePatchSource = 'profileContext.dir'
       } else {
-        profilePatchSource = 'fallback'
-        console.warn(`[${NAME}] profileContext 不可用，回退到兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`)
+        // 再退一步：用命令行里的实例名（launcher 会显式传 --profile <name>）
+        const profileName = profileNameFromArgv(process.argv)
+        if (profileName) {
+          profilePatchPath = join(DSH_HOME, 'profiles', profileName, PROFILE_PATCH_FILENAME)
+          profilePatchSource = 'argv --profile'
+          console.warn(`[${NAME}] profileContext 不可用，按命令行 --profile ${profileName} 定位 profile patch`)
+        } else {
+          profilePatchPath = null
+          profilePatchSource = 'unresolved'
+          console.warn(`[${NAME}] 无法确定当前 profile 的 ${PROFILE_PATCH_FILENAME}（profileContext 不可用，命令行也没有 --profile）；跳过自动配置，请在设置页手动配置`)
+        }
       }
     } catch (error) {
-      profilePatchSource = 'fallback'
-      console.warn(`[${NAME}] 读取 profileContext 失败，回退到兜底路径 ${FALLBACK_PROFILE_PATCH_PATH}`, error)
+      profilePatchPath = null
+      profilePatchSource = 'unresolved'
+      console.warn(`[${NAME}] 读取 profileContext 失败，跳过自动配置（不影响审批）`, error)
     }
 
     // ---- 自动配置权限预设：装完即自举，免去手工编辑 profile ----
