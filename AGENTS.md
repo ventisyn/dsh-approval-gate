@@ -70,19 +70,18 @@ GET  /api/auto-approve/snapshots-stats
 POST /api/auto-approve/snapshots-clear
 ```
 
-**权限预设自举（v1.1.0+）**：插件加载时若发现当前 profile 还没有 `auto-approve` 预设，会自动把它写进该 profile 的 `cordis.patch.yml`（文本级、保留注释），日志提示重启生效。profile 路径优先取运行时的 `profileContext.patchPath`（loader 认的那个文件），其次 `profileContext.dir`，都取不到才回退固定路径；解析结果与来源见 `GET /api/auto-approve/setup` 的 `patchPath` / `patchPathSource`。关闭：`allowlist.json` 的 `autoConfigurePreset: false`。任何失败只退回「人工配置」，不影响审批链路。
+**权限预设自举（v1.1.0+）**：插件加载时若发现当前 profile 还没有 `auto-approve` 预设，会自动把它写进该 profile 的 `cordis.patch.yml`（文本级、保留注释），日志提示重启生效。profile 路径运行时三级解析（`profileContext.patchPath` → `profileContext.dir` → 命令行 `--profile <name>`，源码里不写死实例名）；三级都拿不到就**不写**，只记 warn。解析结果与来源见 `GET /api/auto-approve/setup` 的 `patchPath` / `patchPathSource`。关闭：`allowlist.json` 的 `autoConfigurePreset: false`。任何失败只退回「人工配置」，不影响审批链路。
 
 ## 4. 与 DSH 版本的耦合点 ⚠️
 
-**分支名是完整版本号，profile 名只是其中的 harness 版本 —— 两者不再相等**，改动时必须分别对齐（当前 profile 名 `0.1.7-rc.2`；版本分支名等于 `package.json` 的 `version`，用 `git branch` 现查 —— 本文件不复述具体版本号，避免每次发布都腐烂）。
+**分支名是完整版本号，profile 名只是其中的 harness 版本 —— 两者不再相等**，改动时必须分别对齐（版本分支名等于 `package.json` 的 `version`，用 `git branch` 现查；profile 名就是本机实例名，用 `git branch` 之外的方式现查 —— 本文件不复述具体名字，避免每次发布或改名都腐烂）。
 
 | 位置 | 取值 | 什么时候改 |
 | --- | --- | --- |
 | 分支名 / 安装 ref | `<harness 版本>-v<插件版本>`，与 `package.json` 的 `version` 完全一致 | 每次发布新版本 → 从 dev 分支改名而来（第 10 节） |
 | `package.json` 的 `version` | 完整版本号 `<harness 版本>-v<插件版本>`，与分支名一致 —— **唯一真源**（第 11 节） | 同上（第 11 节） |
-| `src/index.mjs` 的 `FALLBACK_PROFILE_PATCH_PATH` | `join(DSH_HOME, 'profiles', '0.1.7-rc.2', 'cordis.patch.yml')` —— **只到 harness 版本**；运行时优先用 `profileContext.patchPath`，其次 `profileContext.dir`，这是两者都取不到时的兜底 | 仅当换 harness 版本 |
 
-运行时优先用 `profileContext.patchPath`（`dsh-hmr` 的监听列表也用它），其次 `profileContext.dir` 拼接 —— 自动写入与设置页「一键初始化预设」都写这一个文件；`FALLBACK_PROFILE_PATCH_PATH` 只在 `profileContext` 取不到时兜底（上游默认写死 `web`，与本机不符）。
+**profile 路径不写死在源码里**（v1.1.2 起）：实例名可能被改成别的，写死就有可能改到别人的配置上。运行时三级解析 —— `profileContext.patchPath`（`dsh-hmr` 的监听列表也用它）→ `profileContext.dir` + `cordis.patch.yml` → 命令行 `--profile <name>` + `DSH_HOME/profiles/<name>/cordis.patch.yml`；三级都拿不到时**不写**，只记 warn、设置页显示「无法确定 profile 路径」——宁可不自动配置，也不猜一个实例去写。解析结果与来源见 `/setup` 的 `patchPath` / `patchPathSource`。
 
 ### 已知 API 漂移（已踩过）
 
@@ -328,7 +327,7 @@ dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
 <harness 版本>-v<插件版本>          例如 0.1.7-rc.2-v1.0.0
 ```
 
-- **harness 版本**：`0.1.7-rc.2`。它同时是 **profile 目录名**（`~/.dsh/profiles/0.1.7-rc.2`）与 `FALLBACK_PROFILE_PATCH_PATH` 里的那一段（第 4 节）。换 harness 版本 = 新开一条版本线。
+- **harness 版本**：`0.1.7-rc.2`。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/0.1.7-rc.2`），但插件源码**不依赖**这一点（profile 路径运行时解析，见第 4 节）。换 harness 版本 = 新开一条版本线。
 - **插件版本**：`X.Y.Z`，本插件初代版本为 `v1.0.0`；跨 harness 版本**继续累加**，不重置。
 - **完整版本号**：写进 `package.json` 的 `version` —— **这是唯一真源**；它同时是**版本分支名**（第 10 节）与发布 tag `release/<完整版本号>` 的名字。不要在 README、源码或别处重复维护。
 
@@ -355,4 +354,4 @@ dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
 1. **开 dev 时**：把 `package.json` 的 `version` 提到目标完整版本号（例 `0.1.7-rc.2-v1.0.0 → 0.1.7-rc.2-v1.0.1`），提交 `chore: start 0.1.7-rc.2-v1.0.1`
 2. **验收改名后**：打 tag `git tag release/0.1.7-rc.2-v1.0.1` 并推送（加 `release/` 前缀是为了避开"分支名 = tag 名"导致的 `refname is ambiguous`）
 
-⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：新开版本分支 `0.1.8-v1.0.1`、同步改 `FALLBACK_PROFILE_PATCH_PATH`（第 4 节），**插件版本继续累加**，不要重置回 v1.0.0。
+⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：新开版本分支 `0.1.8-v<下一个插件版本>`，**插件版本继续累加**，不要重置回 v1.0.0。源码里已无硬编码的 harness 版本或 profile 名（第 4 节），不用再同步改常量；但**仍要按第 9 节实测**——`permissionPresets.current(session)` 这类 API 漂移恰恰是换版本时最容易踩的坑。
