@@ -474,6 +474,31 @@ function profileNameFromArgv(argv) {
   return /^[A-Za-z0-9._-]+$/.test(name) ? name : ''
 }
 
+/**
+ * 去掉文档开头那个空的 flow 序列 `[]` —— DSH 新建 profile 的 cordis.patch.yml 默认就是这个内容。
+ * 往 `[]` 后面直接拼块序列项会产出**非法 YAML**（`dsh` 下次启动会解析失败），所以追加前必须先剥掉它。
+ * @param text - 当前文件内容
+ * @returns 剥掉空 `[]` 后的内容；若剥完（去注释/空行）什么都不剩则返回空串
+ */
+function stripEmptyFlowRoot(text) {
+  const lines = text.split('\n')
+  let first = -1
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim()
+    if (t && !t.startsWith('#')) { first = i; break }
+  }
+  if (first === -1 || lines[first].trim() !== '[]') return text
+  const rest = lines.slice(first + 1).join('\n')
+  const hasContent = rest.split('\n').some((l) => { const t = l.trim(); return t && !t.startsWith('#') })
+  return hasContent ? rest : ''
+}
+
+/** 检出「`[]` 后面还跟着内容」这种非法形态（v1.1.2 及更早在空 profile 上误写过），供 /setup 报警 */
+function isMalformedEmptyRootPatch(text) {
+  const stripped = stripEmptyFlowRoot(text)
+  return stripped !== text && stripped.trim() !== ''
+}
+
 /** 检查权限预设是否已配置（供设置页初始化卡片） */
 function getSetupState() {
   const base = {
@@ -485,6 +510,15 @@ function getSetupState() {
   if (!profilePatchPath) return { ...base, error: '无法确定当前 profile 的 cordis.patch.yml' }
   try {
     const text = readFileSync(profilePatchPath, 'utf8')
+    // 不能只看字符串包含：文件里可能写着 auto-approve，却已经是非法 YAML（dsh 重启会起不来）
+    if (isMalformedEmptyRootPatch(text)) {
+      return {
+        ...base,
+        configured: true,
+        malformed: true,
+        error: 'profile patch 是非法 YAML（开头是空的 []，后面又跟了内容），dsh 重启会解析失败；点下方按钮可自动修复'
+      }
+    }
     return { ...base, configured: text.includes('auto-approve:') }
   } catch (e) {
     return { ...base, error: String((e && e.message) || e) }
@@ -502,8 +536,15 @@ function ensureAutoApprovePreset() {
     }
   }
   try {
-    const text = readFileSync(profilePatchPath, 'utf8')
-    if (text.includes('auto-approve:')) return { ok: true, status: 'already', needRestart: false }
+    const raw = readFileSync(profilePatchPath, 'utf8')
+    // 先归一化：剥掉空文档的 []（新建 profile 的默认内容）。
+    // 文件若已被早期版本写坏（[] + 内容），这一步同时起到自愈作用。
+    const text = stripEmptyFlowRoot(raw)
+    if (text.includes('auto-approve:')) {
+      if (text === raw) return { ok: true, status: 'already', needRestart: false }
+      writeFileSync(profilePatchPath, text, 'utf8')
+      return { ok: true, status: 'repaired-empty-root', needRestart: true }
+    }
 
     const lines = text.split('\n')
     let permIdx = -1
@@ -512,9 +553,11 @@ function ensureAutoApprovePreset() {
     }
 
     if (permIdx === -1) {
-      // 无 permission 条目：追加完整预设块
+      // 无 permission 条目：追加完整预设块。text 已剥掉空的 []，拼出来的是合法文档；
+      // 原本就是空文档时不要写前导换行。
       const banner = text.includes(PRESET_BANNER) ? '' : PRESET_BANNER + '\n'
-      const next = text.replace(/\s*$/, '') + '\n' + banner + FULL_PERMISSION_BLOCK + AUTO_APPROVE_PRESET_YAML
+      const head = text.replace(/\s*$/, '')
+      const next = (head ? head + '\n' : '') + banner + FULL_PERMISSION_BLOCK + AUTO_APPROVE_PRESET_YAML
       writeFileSync(profilePatchPath, next, 'utf8')
       return { ok: true, status: 'added-entry', needRestart: true }
     }
@@ -879,7 +922,16 @@ export default {
           console.log(`[${NAME}] 自动配置权限预设已关闭（allowlist.json: autoConfigurePreset=false）`)
         } else {
           const state = getSetupState()
-          if (state.configured) {
+          if (state.malformed) {
+            // 早期版本（≤ v1.1.2）在空 profile 上写坏过文件：`[]` 后面跟了块序列项，
+            // dsh 下次启动会解析失败。这里必须自愈——不能因为「文本里有 auto-approve」就跳过写入器。
+            const fixed = ensureAutoApprovePreset()
+            if (fixed.ok && fixed.needRestart) {
+              console.warn(`[${NAME}] profile patch 是非法 YAML，已自动修复（status=${fixed.status}）：${state.patchPath}，重启 dsh web 后生效`)
+            } else if (!fixed.ok) {
+              console.warn(`[${NAME}] 自动修复 profile patch 失败（status=${fixed.status}）：${fixed.error || '未知原因'}`)
+            }
+          } else if (state.configured) {
             // 已就位：记录解析出的路径与来源，便于确认 profileContext 是否生效
             console.log(`[${NAME}] 权限预设已就位：${state.patchPath}（来源 ${profilePatchSource}）`)
           } else {
