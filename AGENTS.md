@@ -105,7 +105,7 @@ POST /api/auto-approve/snapshots-clear
 dsh plugin --profile <profile 名> add github:ventisyn/dsh-approval-gate#<已发布的完整版本号>
 
 # 本地链接（开发期更快，改完重启/热加载即生效）
-dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
+dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 ```
 
 ⚠️ pnpm 的 lockfile 锁的是 **commit hash**（`pnpm-lock.yaml` 里记的是 `codeload.github.com/.../tar.gz/<sha>`）。**推了新提交后必须重跑一次 `add`**，否则装进去的还是旧 commit。
@@ -315,7 +315,7 @@ gh api -X PATCH repos/<owner>/<repo> -f default_branch=<目标完整版本号>
 dsh plugin --profile <profile 名> add github:ventisyn/dsh-approval-gate#<目标完整版本号>/dev
 
 # 方式二（推荐，迭代最快）：链接本地工作副本，改完重启/热加载即生效
-dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
+dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 ```
 
 ⚠️ 用方式一验证完，记得把 profile 切回**已发布版本分支**的 ref（`#<已发布的完整版本号>`），否则会一直跟着 dev 跑。
