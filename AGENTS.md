@@ -90,18 +90,19 @@ POST /api/auto-approve/snapshots-clear
   - 排查入口：`node_modules/@deepseek-ai/dsh-permission-presets/lib/index.js` 的 `current()` / `permissionState()`；官方调用点是同包 `types/index.js` 里的 `this.current(agent.session)`。
 - **不要改用 `permissionPresets.registerAuto(admit)`：对本插件是死路。** 内置 `auto` 的规格固定为 `sandbox: danger-full-access`（`AUTO_PRESET_SPEC`），而 `dsh-sandbox` 的 `approveEscalation()` 只在请求模式**严格宽于**当前模式时才发审批——切到 `auto` 后沙箱全开、不再产生越界请求，门控整条管道永远不会被触发。另外 `registerAuto` 是排他的（`autoAdmit !== undefined` 即抛错），会与官方 `dsh-experimental-auto-review` 抢同一个保留位。结论：`auto-approve` 只能走**配置层**（profile 的 `cordis.patch.yml`），本插件选择在启动时自动写入。
 - 参考：`dsh-base` 的 patch 头声明「后面的 bundle patch 与用户层可按 id 覆盖前面的行，last write wins per row，且整个 `config` 是整体替换而非合并」。理论上可以把预设写进本仓库的 bundle patch，但那要求重述整张 presets 表、会在 harness 升级时盖掉新预设，故未采用。
+- **新建 profile 的用户层 `cordis.patch.yml` 默认内容就是 `[]`（flow 空序列）。** 往 `[]` 后面直接拼块序列项会产出**非法 YAML**，`dsh` 下次启动直接报 `YAMLException … (3:1)` 起不来；而**本次**启动因为配置早已解析完，表现为「插件正常、路由全 200、门控静默不触发」——极难察觉（v1.1.2 及更早踩过，把 `0.2.0-rc.2` 实例写成无法启动）。v1.1.3 起：写入前剥掉空的 `[]`，启动时自愈已写坏的文件（`status=repaired-empty-root`），并且 `GET /api/auto-approve/setup` 在检出该形态时返回 `malformed: true`。排查手法：`dsh --profile <名> --dump-config` 能立刻暴露合成失败。
 
 ## 5. 开发环境
 
 - **无构建步骤、零运行时依赖**：`package.json` 没有 `dependencies`，请保持（host 端用 Node 内置模块，客户端用 loader 注入的 `react`）。
 - 语法自检（等同 `npm test`）：`node --check src/index.mjs && node --check client.js`。
-- 本机为 Windows + PowerShell，DSH 以 `DSH_HOME=%USERPROFILE%\.dsh`、profile `0.1.7-rc.2` 运行，Web 端口当前为 10723。
+- 本机为 Windows + PowerShell，DSH 以 `DSH_HOME=%USERPROFILE%\.dsh` 运行；并存多个 harness 版本（`~/.dsh-win/versions/`），实例名 = profile 名，当前端口与实例现查 —— 本文件不复述，避免腐烂。
 
 ### 装进 profile 验证
 
 ```powershell
 # git 引用（正式）
-dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#<已发布的完整版本号>
+dsh plugin --profile <profile 名> add github:ventisyn/dsh-approval-gate#<已发布的完整版本号>
 
 # 本地链接（开发期更快，改完重启/热加载即生效）
 dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
@@ -286,7 +287,7 @@ gh api -X PATCH repos/<owner>/<repo> -f default_branch=<目标完整版本号>
 | **Y**（次版本） | 按 `X.Y` 分组，**每组只保留最新一条**（同组内更早的 Z 会被删） |
 | **X**（主版本） | 按 `X` 分组，**每个更早的主版本线只保留最新一条** |
 
-分支名省略 `0.1.7-rc.2-` 前缀，连续发布时的演进：
+分支名省略 `<harness 版本>-` 前缀，连续发布时的演进：
 
 | 发布 | 位 | 保留的分支 |
 | --- | --- | --- |
@@ -311,7 +312,7 @@ gh api -X PATCH repos/<owner>/<repo> -f default_branch=<目标完整版本号>
 
 ```powershell
 # 方式一：从 dev 分支装（pnpm 按分支名解析 ref）
-dsh plugin --profile 0.1.7-rc.2 add github:ventisyn/dsh-approval-gate#<目标完整版本号>/dev
+dsh plugin --profile <profile 名> add github:ventisyn/dsh-approval-gate#<目标完整版本号>/dev
 
 # 方式二（推荐，迭代最快）：链接本地工作副本，改完重启/热加载即生效
 dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
@@ -327,7 +328,7 @@ dsh plugin --profile 0.1.7-rc.2 add link:<本地 clone 路径>
 <harness 版本>-v<插件版本>          例如 0.1.7-rc.2-v1.0.0
 ```
 
-- **harness 版本**：`0.1.7-rc.2`。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/0.1.7-rc.2`），但插件源码**不依赖**这一点（profile 路径运行时解析，见第 4 节）。换 harness 版本 = 新开一条版本线。
+- **harness 版本**：完整版本号的前缀（例 `0.2.0-rc.2`）。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/<harness 版本>`），但插件源码**不依赖**这一点 —— profile 路径运行时解析（第 4 节），源码里已无任何硬编码 harness 版本。**已验证可用：`0.1.7-rc.2`、`0.2.0-rc.2`**（两版的 `permission-presets` / `sandbox` / `approval` API 逐行一致）。换 harness 版本 = 新开一条版本线，**插件版本继续累加**。
 - **插件版本**：`X.Y.Z`，本插件初代版本为 `v1.0.0`；跨 harness 版本**继续累加**，不重置。
 - **完整版本号**：写进 `package.json` 的 `version` —— **这是唯一真源**；它同时是**版本分支名**（第 10 节）与发布 tag `release/<完整版本号>` 的名字。不要在 README、源码或别处重复维护。
 
