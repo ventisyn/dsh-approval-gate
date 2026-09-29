@@ -261,7 +261,14 @@ git push -u origin <目标完整版本号>
 git tag release/<目标完整版本号>
 git push origin --tags
 
-# 把 GitHub 默认分支移到新版本：仓库首页与 git clone 默认取的就是它，停在旧版本等于
+# ① 建 GitHub Release（不只是打 tag）：DSHL 插件列表把有 Release 的显示成「正式版」、裸 tag
+#    显示成「标签」，而列表渲染的是 Release 的**标题**——所以标题写干净的版本号，
+#    release/ 前缀只留在 tag 名上（tag 与分支同名会让 git 报 refname is ambiguous）。
+gh release create release/<目标完整版本号> --title "<目标完整版本号>" --notes-file <说明.md>
+#    等价 API：POST /repos/<owner>/<repo>/releases
+#             { "tag_name": "release/<目标完整版本号>", "name": "<目标完整版本号>", "body": "…", "prerelease": false }
+
+# ② 把 GitHub 默认分支移到新版本：仓库首页与 git clone 默认取的就是它，停在旧版本等于
 # 向访客展示过时代码；而且默认分支无法被 --delete。Settings → General → Default branch，或：
 gh api -X PATCH repos/<owner>/<repo> -f default_branch=<目标完整版本号>
 
@@ -270,6 +277,8 @@ gh api -X PATCH repos/<owner>/<repo> -f default_branch=<目标完整版本号>
 
 要点：
 
+- **每次发布都要建 GitHub Release，不能只打 tag**：DSHL 的版本列表分别抓 `releases` 与 `tags` 两个接口 —— 裸 tag 显示为「标签」，只有建了 Release 的才显示「正式版」；而列表渲染的是 Release 的**标题**，所以标题写干净版本号。实测踩过：v1.1.0–v1.1.4 全是裸 tag，插件列表里全显示「标签」。命令见第三步命令块。
+- **tag 名带 `release/` 前缀，分支名不带**：两者同名会让 git 报 `refname is ambiguous`。前缀只出现在 tag 名与 Release 的 URL 里，**不影响列表显示**（显示的是 Release 标题）。
 - **每次发布后把 GitHub 默认分支移到新版本**：仓库首页与 `git clone` 默认取的就是它，停在旧版本等于向访客展示过时代码（实测踩过：v1.1.0 发布后 default 仍停在 v1.0.0）。命令见第三步命令块末尾。
 - **先删远端 `/dev`，再推版本分支**：远端不能同时存在 `refs/heads/X` 与 `refs/heads/X/dev`（后者是前者的目录前缀），否则新建 `X` 会被 GitHub 以 `directory file conflict` 拒绝。实测踩过。
 - `/dev` 分支**同时只有一条**（就是当前正在开发的那个目标版本）；它改名成版本分支后，下一轮开新的。
@@ -330,7 +339,7 @@ dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 
 - **harness 版本**：完整版本号的前缀（例 `0.2.0-rc.2`）。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/<harness 版本>`），但插件源码**不依赖**这一点 —— profile 路径运行时解析（第 4 节），源码里已无任何硬编码 harness 版本。**已验证可用：`0.1.7-rc.2`、`0.2.0-rc.2`**（两版的 `permission-presets` / `sandbox` / `approval` API 逐行一致）。换 harness 版本 = 新开一条版本线，**插件版本继续累加**。
 - **插件版本**：`X.Y.Z`，本插件初代版本为 `v1.0.0`；跨 harness 版本**继续累加**，不重置。
-- **完整版本号**：写进 `package.json` 的 `version` —— **这是唯一真源**；它同时是**版本分支名**（第 10 节）与发布 tag `release/<完整版本号>` 的名字。不要在 README、源码或别处重复维护。
+- **完整版本号**：写进 `package.json` 的 `version` —— **这是唯一真源**；它同时是**版本分支名**（第 10 节）、发布 tag `release/<完整版本号>` 的名字，以及对应 GitHub Release 的标题（**标题不带 `release/` 前缀**，见第 10 节）。不要在 README、源码或别处重复维护。
 
 ### X.Y.Z 的含义
 
