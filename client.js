@@ -653,7 +653,7 @@ window.__ModuleLoader__.load({
               setSnapshot(data)
               setThreshold(String(data.config.riskyThreshold))
               setTimeoutMs(String(data.config.judgeTimeoutMs))
-              setJudgeModel(data.judgeModelConfigured ? String(data.config.judgeModel || '') : null)
+              setJudgeModel(data.config.judgeModelConfigured ? String(data.config.judgeModel || '') : null)
               setError(null)
             } else {
               setError('加载规则失败：' + JSON.stringify(data).slice(0, 200))
