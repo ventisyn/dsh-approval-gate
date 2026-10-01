@@ -52,7 +52,7 @@ if (preset !== PRESET_NAME) return next()
 
 | 文件 | 作用 |
 | --- | --- |
-| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `judgeModel`（钉死判定模型；`''`=显式跟随会话模型，键不存在=用插件行默认值） / `learning` / `autoConfigurePreset`（预设自动写入开关）；**改动即时生效（热更新）** |
+| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `judgeModel`（钉死判定模型；`''`=显式跟随会话模型，键不存在=用插件行默认值；设置页下拉即此三态，`op: unset` 删除该键） / `learning` / `autoConfigurePreset`（预设自动写入开关）；**改动即时生效（热更新）** |
 | `learning.json` | 学习状态：`stats` 计数 + `history[key]` 人工确认样本 |
 | `audit.log` | 追加式决策流水：`ALLOW` / `HARD` / `RISKY` / `SAME` / `OUTCOME` / `LEARN` |
 | `events.jsonl` | UI 时间线数据源 |
@@ -62,7 +62,7 @@ if (preset !== PRESET_NAME) return next()
 
 ```
 GET  /api/auto-approve/events            # 支持 since= / sessionId= 增量
-GET  /api/auto-approve/rules
+GET  /api/auto-approve/rules              # { config, judge, models, learning, predefined, setup }
 GET  /api/auto-approve/setup             # { configured, patchPath, patchPathSource, autoConfigurePreset }
 GET  /api/auto-approve/diff?eventId=&path=
 POST /api/auto-approve/revert

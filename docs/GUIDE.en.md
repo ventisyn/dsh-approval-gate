@@ -109,6 +109,21 @@ Data files live under `$DSH_HOME/auto-approve/` (default `~/.dsh/auto-approve/`)
 - `judgeTimeoutMs`: single flash judgment timeout (default 20000ms; auto-retries once, then goes to human)
 - `judgeModel`: pin the model used for judgment, as `"provider/model"` (e.g. `"deepseek-official/deepseek-flash"`); **`""` explicitly follows the session's default model** (switching models in a session then also switches the judge); **removing the key** means "not configured" and falls back to the plugin row's `config.judgeModel` in the profile's `cordis.patch.yml` (read at startup; this repo defaults it to `deepseek-official/deepseek-flash`). The settings dropdown offers exactly these three: "Default (use cordis.patch.yml)" removes the key, "Follow the session default model" writes `""`, and the remaining entries come from the registered providers' model catalogs
 
+### Judge model (v1.2.0+)
+
+The model used for judgment is resolved in this order; the first hit wins:
+
+| Order | Where | How it applies |
+| --- | --- | --- |
+| 1 | `judgeModel` in `allowlist.json` | **Hot-reloaded**; set `"provider/model"` to pin, `""` to explicitly follow the session's default model |
+| 2 | Plugin row `config.judgeModel` (the profile's `cordis.patch.yml`) | Read at startup; this repo's bundle patch pins `deepseek-official/deepseek-flash` |
+| 3 | `agentDefaultModel.currentSelection()` | Follows model switches inside the session |
+| 4 | Last-resort `deepseek-official/deepseek-flash` | Used when none of the levels above resolve |
+
+- Level 1 only counts as "not configured" when the **key is absent**, which falls through to level 2; `""` is an explicit follow and never falls through
+- The settings dropdown maps to level 1's three choices; the effective model and its source appear next to the dropdown, or in `judge` from `GET /api/auto-approve/rules`
+- ⚠️ A pinned model must actually exist in the deployment's provider catalog: a wrong id raises nothing, it just makes every judgment fail safe into manual approval
+
 ## Usage
 
 Select **"Auto Approval (Flash)"** in the session's permission dropdown (`/permission` dialog or settings). Other sessions are unaffected (gated per session preset).
@@ -122,10 +137,10 @@ A new "Auto Approval" section in the DSH settings panel (`settings.section`, sty
 - **① DENY · deny list** (`denyKeywords`): view/add/remove dangerous keywords (removing a predefined keyword asks for confirmation)
 - **② Allow list** (`allowRules`): view (tagged predefined / learned / user) / add (tool/mode/category/contains form) / remove — e.g. `tool=edit, mode=danger-full-access` auto-approves out-of-workspace edits
 - **③ denyRules · always-human**: rejection-upgraded rules, view/remove
-- **④ Flash · thresholds & timeout**: edit `riskyThreshold` (auto-approve starts at N+1th occurrence after N confirmations) / `judgeTimeoutMs` directly
+- **④ Flash · thresholds & timeout**: edit `riskyThreshold` (auto-approve starts at N+1th occurrence after N confirmations) / `judgeTimeoutMs` directly; the **judge model** is a dropdown (default / follow the session model / catalog), hot-reloaded on save
 - **⑤ Learning · in progress**: confirmation counts (n/N) + samples with a **"Stop" button** to intervene (removes count and samples, restarts learning)
 
-All changes go through `POST /api/auto-approve/rules` into `allowlist.json` — **hot-reloaded immediately** (no restart); `POST /api/auto-approve/setup` handles one-click setup.
+All changes go through `POST /api/auto-approve/rules` into `allowlist.json` — **hot-reloaded immediately** (no restart); `POST /api/auto-approve/setup` handles one-click setup. The judge-model dropdown's choices come from `models` in the `GET /api/auto-approve/rules` response (the registered providers' catalogs).
 
 ## Human Review UI (v0.4.2+)
 
@@ -176,6 +191,7 @@ Neutral confirmation learning: each human approval of the same tool|mode|categor
 - Gate: `permissionPresets.current(session.events) === 'auto-approve'`
 - DSH approval fires on sandbox escalation; `reason` is always `escalate sandbox to <mode>: <justification>`, with `mode` in `workspace-write` / `danger-full-access`
 - flash judgment: `reasoningEffort: 'off'` + `maxTokens: 256`, outputs `SAFE` or `RISKY:<category>`
+- Judge model: `resolveJudgeModel()` walks allowlist → plugin row config → `agentDefaultModel` → last resort, and reports the winner through `judge` in `GET /api/auto-approve/rules`; candidates come from `llm.listProviders()` + `llm.listModels()` (enumeration failures just return an empty list)
 - Timeout: `AbortController` signal into `llm.stream` (cancellable), `Promise.race` + `ctx.timeout(judgeTimeoutMs)`, abort + one retry
 - Similarity verification: current operation context + confirmed samples to flash (`SAME`/`DIFFERENT`); failure counts as DIFFERENT
 - Learning loop: captures human verdicts through the waterfall `next()` return (`allowed-once` persists / `rejected` upgrades)
