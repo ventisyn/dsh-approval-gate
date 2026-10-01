@@ -447,6 +447,7 @@ function getRulesSnapshot() {
       riskyThreshold: config.riskyThreshold || 3,
       judgeTimeoutMs: config.judgeTimeoutMs || 20000,
       judgeModel: config.judgeModel || '',
+      judgeModelConfigured: config.judgeModel !== undefined && config.judgeModel !== null,
       learning: { enabled: learning.enabled !== false },
       autoConfigurePreset: config.autoConfigurePreset !== false
     },
@@ -609,7 +610,15 @@ function applyRuleOp(op, kind, value) {
 
   // 判定模型（钉死判定所用模型）：接收 'provider/model' 或 { provider, model }；空 = 跟随会话默认模型
   if (kind === 'judgeModel') {
-    if (op !== 'set') return { ok: false, error: 'judgeModel 使用 set 操作' }
+    // 删除本键 = 未配置（回到插件行 config 的默认值）；设置空串 = 显式跟随会话默认模型
+    if (op === 'unset' || value === '__default__') {
+      const had = config.judgeModel !== undefined && config.judgeModel !== null
+      if (had) delete config.judgeModel
+      saveJson(ALLOWLIST_PATH, config)
+      audit('CONFIG  judgeModel → 未配置（用 cordis.patch.yml 的默认值）')
+      return { ok: true, unset: true, had: had }
+    }
+    if (op !== 'set') return { ok: false, error: 'judgeModel 使用 set 或 unset 操作' }
     const raw = value === undefined || value === null ? '' : value
     const blank = raw === '' || (typeof raw === 'string' && raw.trim() === '')
     const parsed = blank ? null : normalizeJudgeModel(raw)
@@ -758,6 +767,30 @@ function audit(line) {
 // 前两级非空 = 判定模型被钉死，切换会话模型不再影响判定；留空 = 跟随。
 let pluginJudgeModel = null      // 插件行 config 里的钉死值（apply 启动时解析）
 let agentDefaultModelRef = null  // ctx.get('agentDefaultModel')，延迟绑定
+let llmRef = null                // ctx.llm，供设置页列出可选模型（延迟绑定）
+
+/**
+ * 列出可用于判定的 provider/model（设置页下拉的候选）。
+ * 逐个 provider 查模型目录，任何失败都只跳过该项——枚举失败绝不能影响审批链路。
+ * @returns {Promise<Array<{provider:string, model:string, name:string}>>}
+ */
+async function listAvailableModels() {
+  const out = []
+  if (!llmRef || typeof llmRef.listProviders !== 'function' || typeof llmRef.listModels !== 'function') return out
+  let providers = []
+  try { providers = llmRef.listProviders() || [] } catch (error) { return out }
+  for (const p of providers) {
+    const id = typeof p === 'string' ? p : (p && p.id) || ''
+    if (!id) continue
+    try {
+      const models = await llmRef.listModels(id)
+      for (const m of models || []) {
+        if (m && typeof m.id === 'string' && m.id) out.push({ provider: m.provider || id, model: m.id, name: m.name || m.id })
+      }
+    } catch (error) { /* 该 provider 没有模型目录：跳过 */ }
+  }
+  return out
+}
 
 /** 解析判定模型配置值：'provider/model' 或 { provider, model }；空/非法 → null（表示跟随） */
 function normalizeJudgeModel(value) {
@@ -948,6 +981,7 @@ export default {
   apply(ctx, pluginConfig) {
     const llm = ctx.llm
     const permissionPresets = ctx.permissionPresets
+    llmRef = llm
     agentDefaultModelRef = ctx.get('agentDefaultModel')
     const PRESET_NAME = 'auto-approve'
 
@@ -1077,7 +1111,10 @@ export default {
             }
             try {
               if (req.method === 'GET' || req.method === 'HEAD') {
-                return send(200, getRulesSnapshot())
+                const snap = getRulesSnapshot()
+                // 设置页判定模型下拉的候选；枚举失败只是空列表，不影响其余配置
+                snap.models = await listAvailableModels()
+                return send(200, snap)
               }
               if (req.method === 'POST') {
                 const body = await readBody(req)
