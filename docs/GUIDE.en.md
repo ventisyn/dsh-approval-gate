@@ -7,13 +7,13 @@ DeepSeek Harness auto-approval gate plugin v0.5.0: **minimal human intervention 
 When a session's permission preset is `auto-approve` (Auto Approval), every approval request (sandbox escalation) is judged through this pipeline:
 
 ```
-DENY (irreversible keywords) → allowlist (deterministic rules) → denyRules (rejected upgrades) → flash (SAFE / hard categories / neutral confirmation) → learned persistence
+DENY (irreversible keywords) → allowlist (deterministic rules) → denyRules (rejected upgrades) → judgment (SAFE / hard categories / neutral confirmation) → learned persistence
 ```
 
 - **① DENY layer**: irreversible keywords (`rm -rf`, `drop table`, `force push`, formatting, …) → human (**highest priority, fail-safe**)
 - **② Allowlist layer**: a matching rule → auto-approve (deterministic, no LLM). Default rule `{mode:"workspace-write"}` — workspace writes (recoverable) auto-approve; `tool/mode/category/contains` combinations are supported (including learned rules)
 - **③ denyRules layer**: `tool+mode+category` pairs the user has **explicitly rejected** → permanently human (never auto-approve what the user refused)
-- **④ flash judgment** (escalations only): outputs `SAFE` or `RISKY:<category>`
+- **④ judgment** (escalations only): outputs `SAFE` or `RISKY:<category>`
   - `SAFE` → auto-approve
   - Hard-risk categories (`deletion` / `credential` / `remote` / `system` / `bulk`) → **directly human** (must confirm; no counting, no learning)
   - `neutral` (no hard-risk traits) → **confirmation mode**: first N-1 occurrences go to human, then the threshold state begins
@@ -21,7 +21,7 @@ DENY (irreversible keywords) → allowlist (deterministic rules) → denyRules (
   - Before threshold: every occurrence goes to human; **approve** → count +1 and record an **operation sample** (fingerprint + context); **reject** → upgrade to denyRules
   - At threshold (count ≥ N-1), three branches:
     1. **Fingerprint hit** (this operation is in the confirmed samples) → auto-approve + persist a `{tool, mode, category, contains}` rule
-    2. **No fingerprint hit but samples exist** → hand the current operation's context plus the confirmed samples to flash for **third-party similarity verification**: `SAME` (same kind as a confirmed sample) → auto-approve (persist when a fingerprint exists); `DIFFERENT` / verification failure → human
+    2. **No fingerprint hit but samples exist** → hand the current operation's context plus the confirmed samples to the judge model for **third-party similarity verification**: `SAME` (same kind as a confirmed sample) → auto-approve (persist when a fingerprint exists); `DIFFERENT` / verification failure → human
     3. **No samples** → human
   - **Reject** → upgraded to denyRules (with fingerprint; without one, block the whole kind — rejection is always strict)
   - Cancel/unavailable → not counted (no verdict from the user; next time still goes to human)
@@ -104,9 +104,9 @@ Data files live under `$DSH_HOME/auto-approve/` (default `~/.dsh/auto-approve/`)
 - `denyKeywords`: a hit sends the request to human (irreversible operations)
 - `allowRules`: each rule matches on `tool` / `mode` / `category` / `contains` (omitted fields match anything). Learned rules are also written here
 - `denyRules`: written automatically after a human rejection; a hit goes to human (no learning)
-- `hardCategories`: flash `RISKY` in these categories → directly human (no counting, no learning)
+- `hardCategories`: the judge model's `RISKY` in these categories → directly human (no counting, no learning)
 - `riskyThreshold`: neutral confirmation threshold (default 3) — after N-1 human confirmations of the same tool+mode+category, the Nth occurrence auto-approves and persists a rule
-- `judgeTimeoutMs`: single flash judgment timeout (default 20000ms; auto-retries once, then goes to human)
+- `judgeTimeoutMs`: single judgment timeout (default 20000ms; auto-retries once, then goes to human)
 - `judgeModel`: pin the model used for judgment, as `"provider/model"` (e.g. `"deepseek-official/deepseek-flash"`); **`""` explicitly follows the session's default model** (switching models in a session then also switches the judge); **removing the key** means "not configured" and falls back to the plugin row's `config.judgeModel` in the profile's `cordis.patch.yml` (read at startup; this repo defaults it to `deepseek-official/deepseek-flash`). The settings dropdown offers exactly these three: "Default (use cordis.patch.yml)" removes the key, "Follow the session default model" writes `""`, and the remaining entries come from the registered providers' model catalogs
 
 ### Judge model (v1.2.0+)
@@ -137,7 +137,7 @@ A new "Auto Approval" section in the DSH settings panel (`settings.section`, sty
 - **① DENY · deny list** (`denyKeywords`): view/add/remove dangerous keywords (removing a predefined keyword asks for confirmation)
 - **② Allow list** (`allowRules`): view (tagged predefined / learned / user) / add (tool/mode/category/contains form) / remove — e.g. `tool=edit, mode=danger-full-access` auto-approves out-of-workspace edits
 - **③ denyRules · always-human**: rejection-upgraded rules, view/remove
-- **④ Flash · thresholds & timeout**: edit `riskyThreshold` (auto-approve starts at N+1th occurrence after N confirmations) / `judgeTimeoutMs` directly; the **judge model** is a dropdown (default / follow the session model / catalog), hot-reloaded on save
+- **④ Judgment · thresholds & timeout**: edit `riskyThreshold` (auto-approve starts at N+1th occurrence after N confirmations) / `judgeTimeoutMs` directly; the **judge model** is a dropdown (default / follow the session model / catalog), hot-reloaded on save
 - **⑤ Learning · in progress**: confirmation counts (n/N) + samples with a **"Stop" button** to intervene (removes count and samples, restarts learning)
 
 All changes go through `POST /api/auto-approve/rules` into `allowlist.json` — **hot-reloaded immediately** (no restart); `POST /api/auto-approve/setup` handles one-click setup. The judge-model dropdown's choices come from `models` in the `GET /api/auto-approve/rules` response (the registered providers' catalogs).
@@ -147,7 +147,7 @@ All changes go through `POST /api/auto-approve/rules` into `allowlist.json` — 
 Review entry points appear on auto-approval or human-approval (strict DSH design language, `--dsw-alias-*` tokens):
 
 1. **Notice strip** (a dedicated row above the composer, `conversation.input.dock` order=30, does not scroll with the conversation):
-   - Auto-approval → green ✅: tool + summary + verdict label (allowlist / flash-safe / learned / confirmed / flash-same), auto-dismisses after 8s
+   - Auto-approval → green ✅: tool + summary + verdict label (allowlist / judge safe / learned / confirmed / judge similarity), auto-dismisses after 8s
    - **Escalated to human → amber** (`--dsw-alias-state-warn-*`): "Waiting for human approval: <operation>", **stays until you decide**
    - Human approved → amber "Learning n/N, auto-approves after N" (5s); rejected → red "Rejected · upgraded to always-human"
    - No history notice when opening a session (cursor silently synchronized)
@@ -171,15 +171,15 @@ Data flow: the host appends a structured event to `~/.dsh/auto-approve/events.js
 
 ## Learning Semantics (v0.4.2+)
 
-Neutral confirmation learning: each human approval of the same tool|mode|category increments the count; after **N confirmations (default 3), the N+1th occurrence auto-approves** and persists a fingerprinted rule. In the threshold state: fingerprint hit auto-approves; otherwise Flash semantically verifies against confirmed samples (SAME approves / DIFFERENT goes to human); rejections upgrade to denyRules (always human); in-progress learning can be stopped from the settings page.
+Neutral confirmation learning: each human approval of the same tool|mode|category increments the count; after **N confirmations (default 3), the N+1th occurrence auto-approves** and persists a fingerprinted rule. In the threshold state: fingerprint hit auto-approves; otherwise the judge model semantically verifies against confirmed samples (SAME approves / DIFFERENT goes to human); rejections upgrade to denyRules (always human); in-progress learning can be stopped from the settings page.
 
 ## Security Design
 
 1. **DENY layer highest priority**: irreversible keywords go to human with zero model calls and zero false negatives
 2. **Hard-risk categories are always human**: `deletion`/`credential`/`remote`/`system`/`bulk` are never counted, learned, or covered by persisted rules
-3. **Learned rules carry category + operation fingerprint**: persisted rules are `{tool, mode, category, contains}` (contains = a fingerprint you confirmed); only the same fingerprint auto-approves. When the fingerprint misses, flash does **semantic similarity verification** against your confirmed samples — DIFFERENT or verification failure always goes to human; rejected operations upgrade to denyRules (with fingerprint; without one, the whole kind is blocked), never auto-approved
-4. **Fail-safe**: flash failure, timeout (20s × 2 attempts), or unparseable output → neutral degradation or human; hard risks are never auto-approved
-5. **Recoverable first**: `workspace-write` (workspace writes) auto-approve by default; flash runs only for escalations
+3. **Learned rules carry category + operation fingerprint**: persisted rules are `{tool, mode, category, contains}` (contains = a fingerprint you confirmed); only the same fingerprint auto-approves. When the fingerprint misses, the judge model does **semantic similarity verification** against your confirmed samples — DIFFERENT or verification failure always goes to human; rejected operations upgrade to denyRules (with fingerprint; without one, the whole kind is blocked), never auto-approved
+4. **Fail-safe**: judgment failure, timeout (20s × 2 attempts), or unparseable output → neutral degradation or human; hard risks are never auto-approved
+5. **Recoverable first**: `workspace-write` (workspace writes) auto-approve by default; the judge model runs only for escalations
 6. **Per-session gating**: only sessions that explicitly selected the "Auto Approval" preset are intercepted
 7. **Judge only, never execute**: the plugin returns an allow/forward decision; it does not modify the rest of the approval flow
 
@@ -190,10 +190,10 @@ Neutral confirmation learning: each human approval of the same tool|mode|categor
 - Mounted at the front of the `approval/request` waterfall (`prepend: true`, before the web answerer)
 - Gate: `permissionPresets.current(session.events) === 'auto-approve'`
 - DSH approval fires on sandbox escalation; `reason` is always `escalate sandbox to <mode>: <justification>`, with `mode` in `workspace-write` / `danger-full-access`
-- flash judgment: `reasoningEffort: 'off'` + `maxTokens: 256`, outputs `SAFE` or `RISKY:<category>`
+- Judge model: `reasoningEffort: 'off'` + `maxTokens: 256`, outputs `SAFE` or `RISKY:<category>`
 - Judge model: `resolveJudgeModel()` walks allowlist → plugin row config → `agentDefaultModel` → last resort, and reports the winner through `judge` in `GET /api/auto-approve/rules`; candidates come from `llm.listProviders()` + `llm.listModels()` (enumeration failures just return an empty list)
 - Timeout: `AbortController` signal into `llm.stream` (cancellable), `Promise.race` + `ctx.timeout(judgeTimeoutMs)`, abort + one retry
-- Similarity verification: current operation context + confirmed samples to flash (`SAME`/`DIFFERENT`); failure counts as DIFFERENT
+- Similarity verification: current operation context + confirmed samples to the judge model (`SAME`/`DIFFERENT`); failure counts as DIFFERENT
 - Learning loop: captures human verdicts through the waterfall `next()` return (`allowed-once` persists / `rejected` upgrades)
 - Review UI: host writes `events.jsonl` + `GET /api/auto-approve/events` (sessionId filter + since cursor); client polls and renders
 - Snapshots & diff: approval happens before the write, so the auto-approval event saves `snapshots/<eventId>.json` at record time (text only, ≤256KB per file, ≤5 per event); diff uses approximate line matching and returns changed lines only (up to 500)

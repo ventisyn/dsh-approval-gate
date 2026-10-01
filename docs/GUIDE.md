@@ -7,13 +7,13 @@ DeepSeek Harness 自动审批门控插件 v0.5.0：**最小人工介入，只把
 当会话的权限预设为 `auto-approve`（自动审批）时，每次审批请求（沙箱越界）按管道判定：
 
 ```
-DENY（不可逆危险词）→ 白名单（确定性规则）→ denyRules（裁决拒绝升级）→ flash（SAFE / 硬类别 / 中立确认）→ 学习沉淀
+DENY（不可逆危险词）→ 白名单（确定性规则）→ denyRules（裁决拒绝升级）→ 判定（SAFE / 硬类别 / 中立确认）→ 学习沉淀
 ```
 
 - **① DENY 层**：`rm -rf` / `drop table` / `force push` / 格式化等不可逆危险词命中 → 转人工（**最高优先，fail-safe**）
 - **② 白名单层**：命中规则 → 直接放行（确定性，不过 LLM）。默认规则 `{mode:"workspace-write"}` —— 工作区写入（可回补）自动放行；也支持 `tool/mode/category/contains` 组合规则（含学习沉淀的规则）
 - **③ denyRules 层**：此前用户**裁决拒绝**过的「工具+模式+类别」→ 永久转人工（不会自动放行用户明确拒绝过的操作）
-- **④ flash 判定**（仅越界请求）：输出 `SAFE` 或 `RISKY:<category>`
+- **④ 判定**（仅越界请求）：输出 `SAFE` 或 `RISKY:<category>`
   - `SAFE` → 自动放行
   - 硬风险类别（`deletion` 删除 / `credential` 凭据 / `remote` 远程生产 / `system` 系统路径 / `bulk` 批量不可回补）→ **直接转人工**（必须人工确认，不计数、不学习）
   - `neutral`（中立，无硬风险特征）→ **人工确认制**：前 N-1 次转人工确认，之后进入阈值状态
@@ -21,7 +21,7 @@ DENY（不可逆危险词）→ 白名单（确定性规则）→ denyRules（�
   - 阈值前：一律人工确认，**批准** → 计数 +1 并记录**操作样本**（指纹 + 操作背景/目的）；**拒绝** → 升级 denyRules
   - 阈值后（计数 ≥ N-1）三种分流：
     1. **指纹确定性命中**（本次操作在确认样本中）→ 自动放行 + 沉淀 `{tool, mode, category, contains}` 规则
-    2. **指纹未命中但有确认样本** → 把本次操作的背景/目的 + 用户确认过的样本交给 flash **第三方同类验证**：判 `SAME`（与已确认样本同类）→ 自动放行（有指纹则沉淀）；判 `DIFFERENT`/验证失败 → 人工确认
+    2. **指纹未命中但有确认样本** → 把本次操作的背景/目的 + 用户确认过的样本交给判定模型做**第三方同类验证**：判 `SAME`（与已确认样本同类）→ 自动放行（有指纹则沉淀）；判 `DIFFERENT`/验证失败 → 人工确认
     3. **无确认样本** → 人工确认
   - 用户**拒绝** → 升级进 denyRules（带指纹；提取不到指纹则拦全部同类，拒绝从严）
   - 取消/不可用 → 不计数（用户未表态，下次仍人工确认）
@@ -104,9 +104,9 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 - `denyKeywords`：命中即转人工（不可逆危险操作）
 - `allowRules`：每条规则 `tool` / `mode` / `category` / `contains` 均满足才放行（缺省表示任意）。学习沉淀的规则也会写入这里
 - `denyRules`：用户裁决拒绝后自动写入，命中即转人工（不学习）
-- `hardCategories`：flash 判 RISKY 且命中这些类别 → 直接转人工（不计数、不学习）
+- `hardCategories`：判定模型判 RISKY 且命中这些类别 → 直接转人工（不计数、不学习）
 - `riskyThreshold`：中立类别的人工确认阈值（默认 3）——同一「工具+模式+类别」被人工确认 N-1 次后，第 N 次起自动放行并沉淀规则
-- `judgeTimeoutMs`：单次 flash 判断超时（默认 20000ms，超时自动重试 1 次，仍超时转人工）
+- `judgeTimeoutMs`：单次判定超时（默认 20000ms，超时自动重试 1 次，仍超时转人工）
 - `judgeModel`：钉死判定所用的模型，写 `"provider/model"`（例 `"deepseek-official/deepseek-flash"`）；**写成 `""` = 显式跟随会话默认模型**（你在会话里切换模型，判定模型也会跟着变）；**删掉本键 = 未配置**，改用 profile 的 `cordis.patch.yml` 插件行 `config.judgeModel`（启动时读取，本仓库默认 `deepseek-official/deepseek-flash`）。设置页「判定模型」下拉就是这三项的图形化：「默认（用 cordis.patch.yml 的值）」= 删除本键、「跟随会话默认模型」= `""`，其余项为已注册 provider 模型目录里的模型
 
 ### 判定模型（v1.2.0+）
@@ -137,7 +137,7 @@ DSH 设置面板新增「自动审批」分区（settings.section，样式与 DS
 - **① DENY 层 · 黑名单**（denyKeywords）：查看/添加/删除危险词（删除预置词有确认提示）
 - **② 白名单层 · 白名单**（allowRules）：查看（预置/学习沉淀/用户 来源标签）/添加（tool/mode/category/contains 表单）/删除 —— 例：`tool=edit, mode=danger-full-access` → 工作区外 edit 自动放行
 - **③ denyRules 层 · 永久人工**：拒绝升级的规则，查看/移除
-- **④ Flash 判定 · 阈值与超时**：`riskyThreshold`（学习满 N 次后第 N+1 次自动放行）/ `judgeTimeoutMs` 直接修改；**判定模型为下拉**（默认 / 跟随会话默认模型 / 模型目录），保存后热更新
+- **④ 判定 · 阈值与超时**：`riskyThreshold`（学习满 N 次后第 N+1 次自动放行）/ `judgeTimeoutMs` 直接修改；**判定模型为下拉**（默认 / 跟随会话默认模型 / 模型目录），保存后热更新
 - **⑤ 学习沉淀 · 正在学习**：展示确认计数（n/N）与样本；**「终止」按钮可介入删除**（删除计数与样本，重新学习）
 
 所有修改通过 `POST /api/auto-approve/rules` 写入 `allowlist.json`，**热更新即时生效**（无需重启）；`POST /api/auto-approve/setup` 负责一键初始化。判定模型下拉的候选来自 `GET /api/auto-approve/rules` 返回的 `models`（已注册 provider 的模型目录）。
@@ -147,7 +147,7 @@ DSH 设置面板新增「自动审批」分区（settings.section，样式与 DS
 每次命令被自动放行或转人工审批时，提供审查入口（严格按 DSH 设计语言，`--dsw-alias-*` tokens）：
 
 1. **提示条**（输入框上方独立一行，`conversation.input.dock` order=30，不随流式对话滚动）：
-   - 自动放行 → 绿色 ✅：工具 + 摘要 + 判定路径（白名单规则 / Flash 判定安全 / 沉淀规则 / 已确认操作 / Flash 同类验证），8 秒收起
+   - 自动放行 → 绿色 ✅：工具 + 摘要 + 判定路径（白名单规则 / 判定安全 / 沉淀规则 / 已确认操作 / 同类验证），8 秒收起
    - **转人工审批 → 橙黄色**（`--dsw-alias-state-warn-*`）：显示「等待人工审批：<操作>」，**不自动收起**，直到你确认
    - 人工通过 → 橙黄「学习 n/N，满 N 次后自动放行」（5 秒收起）；拒绝 → 红「已拒绝 · 升级永久人工」
    - 打开会话时不弹历史提示（静默同步游标）
@@ -171,15 +171,15 @@ DSH 设置面板新增「自动审批」分区（settings.section，样式与 DS
 
 ## 学习语义（v0.4.2+）
 
-中立操作确认制：同一「工具|模式|类别」每被人工批准一次计数 +1；**确认满 N 次（默认 3）后，第 N+1 次起自动放行**并沉淀带指纹规则。阈值状态内：指纹命中直接放行；未命中由 Flash 对照确认样本做语义同类验证（SAME 放行 / DIFFERENT 人工）；拒绝升级 denyRules 永久人工；「正在学习」可在设置页终止。
+中立操作确认制：同一「工具|模式|类别」每被人工批准一次计数 +1；**确认满 N 次（默认 3）后，第 N+1 次起自动放行**并沉淀带指纹规则。阈值状态内：指纹命中直接放行；未命中由判定模型对照确认样本做语义同类验证（SAME 放行 / DIFFERENT 人工）；拒绝升级 denyRules 永久人工；「正在学习」可在设置页终止。
 
 ## 安全设计
 
 1. **DENY 层最高优先**：不可逆危险词命中即转人工，不消耗模型调用、无误判
 2. **硬风险类别永远人工**：`deletion`/`credential`/`remote`/`system`/`bulk` 不计数、不学习、不可被沉淀规则覆盖
-3. **学习规则带类别 + 操作指纹**：沉淀的是 `{tool, mode, category, contains}`（contains = 用户确认过的操作指纹），只放行同一指纹的操作；指纹未命中时由 flash **语义级同类验证**（基于用户确认样本判断操作意图是否同类），判 DIFFERENT/验证失败一律人工；拒绝过的操作升级 denyRules（带指纹，提取不到则拦全部同类），永不自动放行
-4. **fail-safe**：flash 调用失败、超时（20s×2 次尝试）、输出无法解析 → 一律按中立降级或转人工，绝不自动放行硬风险
-5. **可回补优先**：`workspace-write`（写工作区）默认放行，越界才走 flash
+3. **学习规则带类别 + 操作指纹**：沉淀的是 `{tool, mode, category, contains}`（contains = 用户确认过的操作指纹），只放行同一指纹的操作；指纹未命中时由判定模型做**语义级同类验证**（基于用户确认样本判断操作意图是否同类），判 DIFFERENT/验证失败一律人工；拒绝过的操作升级 denyRules（带指纹，提取不到则拦全部同类），永不自动放行
+4. **fail-safe**：判定调用失败、超时（20s×2 次尝试）、输出无法解析 → 一律按中立降级或转人工，绝不自动放行硬风险
+5. **可回补优先**：`workspace-write`（写工作区）默认放行，越界才走判定模型
 6. **按会话门控**：只有显式选中「自动审批」预设的会话才介入
 7. **只预判、不执行**：插件只返回允许/转人工决策，不修改审批流程的其他环节
 
@@ -190,10 +190,10 @@ DSH 设置面板新增「自动审批」分区（settings.section，样式与 DS
 - 挂载于 `approval/request` 瀑布最前（`prepend: true`，先于 web answerer 接单）
 - 门控：`permissionPresets.current(session.events) === 'auto-approve'`
 - DSH 审批触发点是沙箱越界，`reason` 固定为 `escalate sandbox to <mode>: <justification>`，`mode` 仅 `workspace-write` / `danger-full-access` 两级
-- flash 判定：`reasoningEffort: 'off'` + `maxTokens: 256`，输出 `SAFE` 或 `RISKY:<category>`
+- 判定模型：`reasoningEffort: 'off'` + `maxTokens: 256`，输出 `SAFE` 或 `RISKY:<category>`
 - 判定模型解析：`resolveJudgeModel()` 按 allowlist → 插件行 config → `agentDefaultModel` → 硬兜底 的顺序取，来源随 `GET /api/auto-approve/rules` 的 `judge` 字段暴露；候选模型由 `llm.listProviders()` + `llm.listModels()` 枚举（枚举失败只返回空列表，不影响审批）
 - 超时兜底：`AbortController` 传入 `llm.stream` 的 signal（可取消底层请求），`Promise.race` + `ctx.timeout(judgeTimeoutMs)`，超时 abort 并重试 1 次
-- 同类验证：把当前操作背景/目的 + 用户确认样本交给 flash 语义判断（`SAME`/`DIFFERENT`），失败按 DIFFERENT 处理
+- 同类验证：把当前操作背景/目的 + 用户确认样本交给判定模型语义判断（`SAME`/`DIFFERENT`），失败按 DIFFERENT 处理
 - 学习闭环：通过 waterfall 的 `next()` 返回值捕获人工裁决结果（`allowed-once` 沉淀 / `rejected` 升级）
 - 审查 UI：host 写 `events.jsonl` + `GET /api/auto-approve/events`（按 sessionId 过滤 + since 增量）；client 轮询展示
 - 快照与 diff：审批发生在写入前，自动放行事件落盘时保存 `snapshots/<eventId>.json`（仅文本 ≤256KB、每事件 ≤5 个文件）；diff 用近似逐行匹配只返回变更行（上限 500 行）
