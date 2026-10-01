@@ -107,7 +107,7 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 - `hardCategories`：flash 判 RISKY 且命中这些类别 → 直接转人工（不计数、不学习）
 - `riskyThreshold`：中立类别的人工确认阈值（默认 3）——同一「工具+模式+类别」被人工确认 N-1 次后，第 N 次起自动放行并沉淀规则
 - `judgeTimeoutMs`：单次 flash 判断超时（默认 20000ms，超时自动重试 1 次，仍超时转人工）
-- `judgeModel`：钉死判定所用的模型，写 `"provider/model"`（例 `"deepseek-official/deepseek-flash"`）；**写成 `""` = 显式跟随会话默认模型**（你在会话里切换模型，判定模型也会跟着变）；**删掉本键 = 未配置**，改用 profile 的 `cordis.patch.yml` 插件行 `config.judgeModel`（启动时读取，本仓库默认 `deepseek-official/deepseek-flash`）
+- `judgeModel`：钉死判定所用的模型，写 `"provider/model"`（例 `"deepseek-official/deepseek-flash"`）；**写成 `""` = 显式跟随会话默认模型**（你在会话里切换模型，判定模型也会跟着变）；**删掉本键 = 未配置**，改用 profile 的 `cordis.patch.yml` 插件行 `config.judgeModel`（启动时读取，本仓库默认 `deepseek-official/deepseek-flash`）。设置页「判定模型」下拉就是这三项的图形化：「默认（用 cordis.patch.yml 的值）」= 删除本键、「跟随会话默认模型」= `""`，其余项为已注册 provider 模型目录里的模型
 
 ## 使用
 
