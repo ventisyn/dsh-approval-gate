@@ -107,7 +107,7 @@ Data files live under `$DSH_HOME/auto-approve/` (default `~/.dsh/auto-approve/`)
 - `hardCategories`: flash `RISKY` in these categories → directly human (no counting, no learning)
 - `riskyThreshold`: neutral confirmation threshold (default 3) — after N-1 human confirmations of the same tool+mode+category, the Nth occurrence auto-approves and persists a rule
 - `judgeTimeoutMs`: single flash judgment timeout (default 20000ms; auto-retries once, then goes to human)
-- `judgeModel`: pin the model used for judgment, as `"provider/model"` (e.g. `"deepseek-official/deepseek-flash"`); **empty = follow the session's default model** (switching models in a session then also switches the judge). A deployment default can also be set via the plugin row's `config.judgeModel` in the profile's `cordis.patch.yml` (read at startup); this file wins
+- `judgeModel`: pin the model used for judgment, as `"provider/model"` (e.g. `"deepseek-official/deepseek-flash"`); **`""` explicitly follows the session's default model** (switching models in a session then also switches the judge); **removing the key** means "not configured" and falls back to the plugin row's `config.judgeModel` in the profile's `cordis.patch.yml` (read at startup; this repo defaults it to `deepseek-official/deepseek-flash`)
 
 ## Usage
 
