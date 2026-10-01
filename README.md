@@ -46,7 +46,7 @@ dsh plugin --profile web add dsh-approval-gate
 
 1. **权限预设（自动）**：插件启动时会把 `auto-approve` 预设自动写进 profile 的 `cordis.patch.yml`（可在 `allowlist.json` 用 `autoConfigurePreset: false` 关闭，或在设置页手动写入；[详见指南](docs/GUIDE.md)）
 2. **重启** `dsh web`（让写入的预设进入权限下拉）
-3. **选择预设**：会话权限下拉选中「自动审批（Flash）」
+3. **选择预设**：会话权限下拉选中「自动审批」
 
 ## 📖 文档
 
