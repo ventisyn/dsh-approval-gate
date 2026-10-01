@@ -277,7 +277,7 @@ gh api -X PATCH repos/<owner>/<repo> -f default_branch=<目标完整版本号>
 
 要点：
 
-- **每次发布都要建 GitHub Release，不能只打 tag**：DSHL 的版本列表分别抓 `releases` 与 `tags` 两个接口 —— 裸 tag 显示为「标签」，只有建了 Release 的才显示「正式版」；而列表渲染的是 Release 的**标题**，所以标题写干净版本号。实测踩过：v1.1.0–v1.1.4 全是裸 tag，插件列表里全显示「标签」。命令见第三步命令块。
+- **每次发布都要建 GitHub Release，不能只打 tag**：DSHL 的版本列表分别抓 `releases` 与 `tags` 两个接口 —— 裸 tag 显示为「标签」，只有建了 Release 的才显示「正式版」；而列表渲染的是 Release 的**标题**，所以标题写干净版本号。已复查（v1.2.1）：`v1.1.0` 起的每个 tag **都有**对应的 Release，不存在裸 tag；唯一既无 tag 也无 Release 的是更早的 `0.1.7-rc.2-v1.0.0` 版本线。命令见第三步命令块。
 - **tag 名带 `release/` 前缀，分支名不带**：两者同名会让 git 报 `refname is ambiguous`。前缀只出现在 tag 名与 Release 的 URL 里，**不影响列表显示**（显示的是 Release 标题）。
 - **每次发布后把 GitHub 默认分支移到新版本**：仓库首页与 `git clone` 默认取的就是它，停在旧版本等于向访客展示过时代码（实测踩过：v1.1.0 发布后 default 仍停在 v1.0.0）。命令见第三步命令块末尾。
 - **先删远端 `/dev`，再推版本分支**：远端不能同时存在 `refs/heads/X` 与 `refs/heads/X/dev`（后者是前者的目录前缀），否则新建 `X` 会被 GitHub 以 `directory file conflict` 拒绝。实测踩过。
