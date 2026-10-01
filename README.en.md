@@ -15,6 +15,7 @@ A Flash model pre-judges every sandbox escalation: routine operations auto-appro
 - 📄 **File diff & revert** (v0.5.0+): click a file in an approval record to view a **unified diff** — changed lines with ±5 context lines, multiple changes grouped into hunks separated by gray "N unmodified lines" bars, green additions / red deletions / gray context, dual line numbers; one-click **Revert** sends a command for the AI to restore the file from snapshot
 - 🗂️ **Session-scoped snapshots** (v0.5.0+): snapshots belong to the event's session; the approval view shows only the current session's snapshot stats; clearing supports "this session only" vs "clear all" to avoid wiping other sessions' unviewed diffs
 - 🔧 **Hot-reloadable config**: `allowlist.json` edits take effect immediately, no restart
+- 🎛️ **Pinnable judge model** (v1.2.0+): a settings dropdown pins the model used for judgment to one `provider/model`, follows the session's default model, or uses the deployment default in `cordis.patch.yml`; once pinned, switching the session model no longer changes the judge. Hot-reloaded.
 - ✅ **Human review UI**: a green notice appears above the composer on auto-approval; the "Approval" view (right of Trajectory) shows the current session's full auto-approval timeline
 
 ## 📸 Interface Overview
@@ -35,7 +36,7 @@ Click a file in an approval record to open the diff dialog: a **unified diff** w
 
 ![Settings Auto-approval](docs/screenshots/settings-auto-approve.png)
 
-The "Auto-approval" section in Settings provides full configuration: **preset initialization** (one-click write of the `auto-approve` preset into `cordis.patch.yml`), **pipeline overview** (DENY → allowlist → denyRules → Flash → learning), **deny-keyword blacklist** (built-in entries + custom add), and hot-reload notes (changes take effect immediately, no restart).
+The "Auto-approval" section in Settings provides full configuration: **preset initialization** (one-click write of the `auto-approve` preset into `cordis.patch.yml`), **pipeline overview** (DENY → allowlist → denyRules → Flash → learning), **deny-keyword blacklist** (built-in entries + custom add), and hot-reload notes (changes take effect immediately, no restart). The **judge model** row is a dropdown — "Default (use cordis.patch.yml; this repo pins deepseek-official/deepseek-flash)", "Follow the session default model", or any model from the advertised catalog — and shows the effective model plus its source right next to it.
 
 ## 🚀 Quick Start
 

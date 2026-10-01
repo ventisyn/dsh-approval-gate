@@ -109,6 +109,21 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 - `judgeTimeoutMs`：单次 flash 判断超时（默认 20000ms，超时自动重试 1 次，仍超时转人工）
 - `judgeModel`：钉死判定所用的模型，写 `"provider/model"`（例 `"deepseek-official/deepseek-flash"`）；**写成 `""` = 显式跟随会话默认模型**（你在会话里切换模型，判定模型也会跟着变）；**删掉本键 = 未配置**，改用 profile 的 `cordis.patch.yml` 插件行 `config.judgeModel`（启动时读取，本仓库默认 `deepseek-official/deepseek-flash`）。设置页「判定模型」下拉就是这三项的图形化：「默认（用 cordis.patch.yml 的值）」= 删除本键、「跟随会话默认模型」= `""`，其余项为已注册 provider 模型目录里的模型
 
+### 判定模型（v1.2.0+）
+
+判定所用的模型按下面顺序解析，先命中者胜出：
+
+| 顺序 | 位置 | 生效方式 |
+| --- | --- | --- |
+| 1 | `allowlist.json` 的 `judgeModel` | **热更新**；写 `"provider/model"` 钉死，写 `""` 显式跟随会话默认模型 |
+| 2 | 插件行 `config.judgeModel`（profile 的 `cordis.patch.yml`） | 启动时读取；本仓库 bundle patch 默认钉死 `deepseek-official/deepseek-flash` |
+| 3 | `agentDefaultModel.currentSelection()` | 会随会话里切换模型而变化 |
+| 4 | 硬兜底 `deepseek-official/deepseek-flash` | 前三级都取不到时使用 |
+
+- 第 1 级**键不存在**才算「未配置」，落到第 2 级；写 `""` 是显式跟随，不会再落到第 2 级
+- 设置页「判定模型」下拉对应第 1 级的三种取值；当前生效值与来源见下拉右侧那一行，或 `GET /api/auto-approve/rules` 的 `judge` 字段
+- ⚠️ 钉死的模型必须在当前部署的 provider 目录里真实存在：填错不会报错，只会在每次判定失败后 fail-safe 转人工
+
 ## 使用
 
 在会话的权限下拉（`/permission` 弹窗或设置页）选中**「自动审批（Flash）」**，该会话即启用自动审批；其他会话不受影响（按会话预设门控）。
@@ -122,10 +137,10 @@ DSH 设置面板新增「自动审批」分区（settings.section，样式与 DS
 - **① DENY 层 · 黑名单**（denyKeywords）：查看/添加/删除危险词（删除预置词有确认提示）
 - **② 白名单层 · 白名单**（allowRules）：查看（预置/学习沉淀/用户 来源标签）/添加（tool/mode/category/contains 表单）/删除 —— 例：`tool=edit, mode=danger-full-access` → 工作区外 edit 自动放行
 - **③ denyRules 层 · 永久人工**：拒绝升级的规则，查看/移除
-- **④ Flash 判定 · 阈值与超时**：`riskyThreshold`（学习满 N 次后第 N+1 次自动放行）/ `judgeTimeoutMs` 直接修改
+- **④ Flash 判定 · 阈值与超时**：`riskyThreshold`（学习满 N 次后第 N+1 次自动放行）/ `judgeTimeoutMs` 直接修改；**判定模型为下拉**（默认 / 跟随会话默认模型 / 模型目录），保存后热更新
 - **⑤ 学习沉淀 · 正在学习**：展示确认计数（n/N）与样本；**「终止」按钮可介入删除**（删除计数与样本，重新学习）
 
-所有修改通过 `POST /api/auto-approve/rules` 写入 `allowlist.json`，**热更新即时生效**（无需重启）；`POST /api/auto-approve/setup` 负责一键初始化。
+所有修改通过 `POST /api/auto-approve/rules` 写入 `allowlist.json`，**热更新即时生效**（无需重启）；`POST /api/auto-approve/setup` 负责一键初始化。判定模型下拉的候选来自 `GET /api/auto-approve/rules` 返回的 `models`（已注册 provider 的模型目录）。
 
 ## 人工审查 UI（v0.4.2+）
 
@@ -176,6 +191,7 @@ DSH 设置面板新增「自动审批」分区（settings.section，样式与 DS
 - 门控：`permissionPresets.current(session.events) === 'auto-approve'`
 - DSH 审批触发点是沙箱越界，`reason` 固定为 `escalate sandbox to <mode>: <justification>`，`mode` 仅 `workspace-write` / `danger-full-access` 两级
 - flash 判定：`reasoningEffort: 'off'` + `maxTokens: 256`，输出 `SAFE` 或 `RISKY:<category>`
+- 判定模型解析：`resolveJudgeModel()` 按 allowlist → 插件行 config → `agentDefaultModel` → 硬兜底 的顺序取，来源随 `GET /api/auto-approve/rules` 的 `judge` 字段暴露；候选模型由 `llm.listProviders()` + `llm.listModels()` 枚举（枚举失败只返回空列表，不影响审批）
 - 超时兜底：`AbortController` 传入 `llm.stream` 的 signal（可取消底层请求），`Promise.race` + `ctx.timeout(judgeTimeoutMs)`，超时 abort 并重试 1 次
 - 同类验证：把当前操作背景/目的 + 用户确认样本交给 flash 语义判断（`SAME`/`DIFFERENT`），失败按 DIFFERENT 处理
 - 学习闭环：通过 waterfall 的 `next()` 返回值捕获人工裁决结果（`allowed-once` 沉淀 / `rejected` 升级）
