@@ -4,7 +4,7 @@
 
 DeepSeek Harness 自动审批门控插件 v0.5.0：**最小人工介入，只把必须人工确认的操作转人工（fail-safe）**。
 
-当会话的权限预设为 `auto-approve`（自动审批（Flash））时，每次审批请求（沙箱越界）按管道判定：
+当会话的权限预设为 `auto-approve`（自动审批）时，每次审批请求（沙箱越界）按管道判定：
 
 ```
 DENY（不可逆危险词）→ 白名单（确定性规则）→ denyRules（裁决拒绝升级）→ flash（SAFE / 硬类别 / 中立确认）→ 学习沉淀
@@ -64,11 +64,11 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
       auto-approve:
         sandbox: workspace-write
         approval: ask
-        name: 自动审批（Flash）
+        name: 自动审批
         description: 多级判定：工作区写入自动放行，危险操作转人工审批。
 ```
 
-重启 `dsh web` 后，权限下拉菜单会出现「自动审批（Flash）」选项。
+重启 `dsh web` 后，权限下拉菜单会出现「自动审批」选项。
 
 ## 配置（可选）
 
@@ -126,7 +126,7 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 
 ## 使用
 
-在会话的权限下拉（`/permission` 弹窗或设置页）选中**「自动审批（Flash）」**，该会话即启用自动审批；其他会话不受影响（按会话预设门控）。
+在会话的权限下拉（`/permission` 弹窗或设置页）选中**「自动审批」**，该会话即启用自动审批；其他会话不受影响（按会话预设门控）。
 
 ## 设置页（v0.4.2+）
 
@@ -180,7 +180,7 @@ DSH 设置面板新增「自动审批」分区（settings.section，样式与 DS
 3. **学习规则带类别 + 操作指纹**：沉淀的是 `{tool, mode, category, contains}`（contains = 用户确认过的操作指纹），只放行同一指纹的操作；指纹未命中时由 flash **语义级同类验证**（基于用户确认样本判断操作意图是否同类），判 DIFFERENT/验证失败一律人工；拒绝过的操作升级 denyRules（带指纹，提取不到则拦全部同类），永不自动放行
 4. **fail-safe**：flash 调用失败、超时（20s×2 次尝试）、输出无法解析 → 一律按中立降级或转人工，绝不自动放行硬风险
 5. **可回补优先**：`workspace-write`（写工作区）默认放行，越界才走 flash
-6. **按会话门控**：只有显式选中「自动审批（Flash）」预设的会话才介入
+6. **按会话门控**：只有显式选中「自动审批」预设的会话才介入
 7. **只预判、不执行**：插件只返回允许/转人工决策，不修改审批流程的其他环节
 
 > 警告：自动审批会显著降低人工介入频率。**仅供可信环境使用**，涉及生产数据、远程系统、支付扣费等高风险场景请保持 `ask` 预设。

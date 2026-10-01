@@ -4,7 +4,7 @@
 
 DeepSeek Harness auto-approval gate plugin v0.5.0: **minimal human intervention — only operations that must be confirmed go to a human (fail-safe)**.
 
-When a session's permission preset is `auto-approve` (Auto Approval (Flash)), every approval request (sandbox escalation) is judged through this pipeline:
+When a session's permission preset is `auto-approve` (Auto Approval), every approval request (sandbox escalation) is judged through this pipeline:
 
 ```
 DENY (irreversible keywords) → allowlist (deterministic rules) → denyRules (rejected upgrades) → flash (SAFE / hard categories / neutral confirmation) → learned persistence
@@ -64,11 +64,11 @@ To configure it by hand (when the automatic write fails or you need a custom tab
       auto-approve:
         sandbox: workspace-write
         approval: ask
-        name: Auto Approval (Flash)
+        name: Auto Approval
         description: Multi-stage judgment: workspace writes auto-approve, risky operations go to human.
 ```
 
-Restart `dsh web`; the permission dropdown then offers "Auto Approval (Flash)".
+Restart `dsh web`; the permission dropdown then offers "Auto Approval".
 
 ## Configuration (optional)
 
@@ -126,7 +126,7 @@ The model used for judgment is resolved in this order; the first hit wins:
 
 ## Usage
 
-Select **"Auto Approval (Flash)"** in the session's permission dropdown (`/permission` dialog or settings). Other sessions are unaffected (gated per session preset).
+Select **"Auto Approval"** in the session's permission dropdown (`/permission` dialog or settings). Other sessions are unaffected (gated per session preset).
 
 ## Settings Page (v0.4.2+)
 
@@ -180,7 +180,7 @@ Neutral confirmation learning: each human approval of the same tool|mode|categor
 3. **Learned rules carry category + operation fingerprint**: persisted rules are `{tool, mode, category, contains}` (contains = a fingerprint you confirmed); only the same fingerprint auto-approves. When the fingerprint misses, flash does **semantic similarity verification** against your confirmed samples — DIFFERENT or verification failure always goes to human; rejected operations upgrade to denyRules (with fingerprint; without one, the whole kind is blocked), never auto-approved
 4. **Fail-safe**: flash failure, timeout (20s × 2 attempts), or unparseable output → neutral degradation or human; hard risks are never auto-approved
 5. **Recoverable first**: `workspace-write` (workspace writes) auto-approve by default; flash runs only for escalations
-6. **Per-session gating**: only sessions that explicitly selected the "Auto Approval (Flash)" preset are intercepted
+6. **Per-session gating**: only sessions that explicitly selected the "Auto Approval" preset are intercepted
 7. **Judge only, never execute**: the plugin returns an allow/forward decision; it does not modify the rest of the approval flow
 
 > Warning: auto-approval dramatically lowers human intervention. **Trusted environments only** — keep the `ask` preset for production data, remote systems, payments, and other high-risk scenarios.

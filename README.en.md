@@ -46,7 +46,7 @@ dsh plugin --profile web add dsh-approval-gate
 
 1. **Permission preset (automatic)**: the plugin writes the `auto-approve` preset into the profile's `cordis.patch.yml` on startup (disable with `autoConfigurePreset: false` in `allowlist.json`, or write it by hand from the settings page; [see guide](docs/GUIDE.en.md))
 2. **Restart** `dsh web` (so the written preset appears in the permission dropdown)
-3. **Select the preset**: choose "Auto Approval (Flash)" in the session's permission dropdown
+3. **Select the preset**: choose "Auto Approval" in the session's permission dropdown
 
 ## 📖 Docs
 
