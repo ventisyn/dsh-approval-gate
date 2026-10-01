@@ -240,8 +240,8 @@ function diffLines(before, after, contextLines) {
 const AUTO_APPROVE_PRESET_YAML = `      auto-approve:
         sandbox: workspace-write
         approval: ask
-        name: 自动审批（Flash）
-        description: Flash 预判写入/命令是否不可回补：安全自动批准，有风险转人工审批。
+        name: 自动审批
+        description: 判定模型预判写入/命令是否不可回补：安全自动批准，有风险转人工审批。
 `
 // 预设块标题注释：文件里已有同一条时不再重复写（避免追加出两行一样的 banner）
 const PRESET_BANNER = '# ── 自动审批模式（dsh-approval-gate）─────────────────────────'
@@ -545,6 +545,15 @@ function ensureAutoApprovePreset() {
     // 文件若已被早期版本写坏（[] + 内容），这一步同时起到自愈作用。
     const text = stripEmptyFlowRoot(raw)
     if (text.includes('auto-approve:')) {
+      // 预设已存在：把早期版本写下的「自动审批（Flash）」统一改名为「自动审批」
+      // （判定模型已可配置，名称里不该再写死 Flash；只替换精确的旧默认值，不动用户自己的改名）
+      const renamed = text
+        .replace('name: 自动审批（Flash）', 'name: 自动审批')
+        .replace('description: Flash 预判写入/命令是否不可回补', 'description: 判定模型预判写入/命令是否不可回补')
+      if (renamed !== text) {
+        writeFileSync(profilePatchPath, renamed, 'utf8')
+        return { ok: true, status: 'renamed', needRestart: true }
+      }
       if (text === raw) return { ok: true, status: 'already', needRestart: false }
       writeFileSync(profilePatchPath, text, 'utf8')
       return { ok: true, status: 'repaired-empty-root', needRestart: true }
@@ -1043,8 +1052,16 @@ export default {
               console.warn(`[${NAME}] 自动修复 profile patch 失败（status=${fixed.status}）：${fixed.error || '未知原因'}`)
             }
           } else if (state.configured) {
-            // 已就位：记录解析出的路径与来源，便于确认 profileContext 是否生效
-            console.log(`[${NAME}] 权限预设已就位：${state.patchPath}（来源 ${profilePatchSource}）`)
+            // 已就位：记录解析出的路径与来源，便于确认 profileContext 是否生效；
+            // 同时跑一次幂等的写入器，让早期版本写下的预设名（自动审批（Flash））能被改名
+            const kept = ensureAutoApprovePreset()
+            if (kept.ok && kept.needRestart) {
+              console.warn(`[${NAME}] 已更新 profile 里的 auto-approve 预设（status=${kept.status}）：${profilePatchPath}，重启 dsh web 后生效`)
+            } else if (!kept.ok) {
+              console.warn(`[${NAME}] 检查 profile 预设失败（status=${kept.status}）：${kept.error || '未知原因'}`)
+            } else {
+              console.log(`[${NAME}] 权限预设已就位：${state.patchPath}（来源 ${profilePatchSource}）`)
+            }
           } else {
             const result = ensureAutoApprovePreset()
             if (result.ok && result.needRestart) {
