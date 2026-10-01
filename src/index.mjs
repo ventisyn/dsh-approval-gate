@@ -790,7 +790,7 @@ function resolveJudgeModel() {
   } catch (error) {
     console.error(`[${NAME}] agentDefaultModel.currentSelection() failed`, error)
   }
-  return { provider: 'deepseek-official', model: 'deepseek-v4-flash', source: 'fallback' }
+  return { provider: 'deepseek-official', model: 'deepseek-flash', source: 'fallback' }
 }
 
 // 首次加载时初始化配置文件；旧版（v1）自动补齐 v3 字段
