@@ -643,6 +643,7 @@ window.__ModuleLoader__.load({
       const [newRule, setNewRule] = React.useState({ tool: '', mode: '', category: '', contains: '' })
       const [threshold, setThreshold] = React.useState('3')
       const [timeoutMs, setTimeoutMs] = React.useState('20000')
+      const [judgeModel, setJudgeModel] = React.useState('')
 
       const load = function () {
         fetch('/api/auto-approve/rules', { headers: { 'cache-control': 'no-cache' } })
@@ -652,6 +653,7 @@ window.__ModuleLoader__.load({
               setSnapshot(data)
               setThreshold(String(data.config.riskyThreshold))
               setTimeoutMs(String(data.config.judgeTimeoutMs))
+              setJudgeModel(String(data.config.judgeModel || ''))
               setError(null)
             } else {
               setError('加载规则失败：' + JSON.stringify(data).slice(0, 200))
@@ -909,7 +911,7 @@ window.__ModuleLoader__.load({
               React.createElement('span', { className: 'ag-set-stage' }, '④ Flash 判定'),
               '阈值与超时'),
             React.createElement('p', { className: 'ag-set-card-sub' },
-              '管道第四步：确认阈值 N（学习满 N 次后第 N+1 次自动放行）与 Flash 判断超时（超时自动重试 1 次，仍失败转人工）。')),
+              '管道第四步：确认阈值 N（学习满 N 次后第 N+1 次自动放行）、Flash 判断超时（超时自动重试 1 次，仍失败转人工），判定模型留空则跟随会话默认模型（会随切模型变化）。')),
           React.createElement('div', { className: 'ag-set-row' },
             React.createElement('span', { className: 'ag-set-item-meta' }, '确认阈值 N：'),
             React.createElement('input', {
@@ -932,6 +934,22 @@ window.__ModuleLoader__.load({
               type: 'button', className: 'ag-set-btn', disabled: busy,
               onClick: function () { api({ op: 'set', kind: 'judgeTimeoutMs', value: Number(timeoutMs) }) },
             }, '保存'),
+          ),
+          React.createElement('div', { className: 'ag-set-row' },
+            React.createElement('span', { className: 'ag-set-item-meta' }, '判定模型：'),
+            React.createElement('input', {
+              className: 'ag-set-input ag-set-input-model', type: 'text', value: judgeModel,
+              placeholder: 'provider/model，留空 = 跟随会话默认模型',
+              onChange: function (e) { setJudgeModel(e.target.value) },
+            }),
+            React.createElement('button', {
+              type: 'button', className: 'ag-set-btn', disabled: busy,
+              onClick: function () { api({ op: 'set', kind: 'judgeModel', value: judgeModel }) },
+            }, '保存'),
+            React.createElement('span', { className: 'ag-set-item-meta' },
+              snapshot && snapshot.judge
+                ? '生效：' + (snapshot.judge.provider || '?') + '/' + (snapshot.judge.model || '?') + (snapshot.judge.source === 'agentDefaultModel' ? '（跟随默认模型，会随切模型变化）' : '（已钉死 · ' + snapshot.judge.source + '）')
+                : ''),
           ),
         ),
 
