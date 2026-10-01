@@ -137,10 +137,10 @@ window.__ModuleLoader__.load({
 
     const VERDICT_LABELS = {
       rule: '白名单规则',
-      'flash-safe': 'Flash 判定安全',
+      'flash-safe': '判定安全',
       learned: '沉淀规则',
       fpHit: '已确认操作',
-      'flash-same': 'Flash 同类验证'
+      'flash-same': '同类验证'
     }
     const VERDICT_NEUTRAL = new Set(['rule', 'learned', 'fpHit', 'flash-same'])
     const HARD_CATEGORIES = new Set(['deletion', 'credential', 'remote', 'system', 'bulk'])
@@ -629,7 +629,7 @@ window.__ModuleLoader__.load({
     }
     function ruleSource(rule) {
       const d = String(rule && rule.description || '')
-      if (d.indexOf('自动沉淀') === 0 || d.indexOf('人工确认后') >= 0 || d.indexOf('flash 同类') >= 0) return 'learned'
+      if (d.indexOf('自动沉淀') === 0 || d.indexOf('人工确认后') >= 0 || (d.indexOf('flash 同类') >= 0 || d.indexOf('同类验证') >= 0)) return 'learned'
       if (d === '用户自定义') return 'user'
       return 'default'
     }
@@ -825,7 +825,7 @@ window.__ModuleLoader__.load({
               React.createElement('span', { className: 'ag-set-stage' }, '② 白名单层'),
               '白名单 · 自动放行规则'),
             React.createElement('p', { className: 'ag-set-card-sub' },
-              '管道第二步：命中规则直接自动放行（不过 Flash）。示例：tool=edit + mode=danger-full-access → 所有工作区外 edit 自动放行。')),
+              '管道第二步：命中规则直接自动放行（不过判定模型）。示例：tool=edit + mode=danger-full-access → 所有工作区外 edit 自动放行。')),
           React.createElement('div', { className: 'ag-set-row' },
             React.createElement('input', { className: 'ag-set-input', style: { width: 110 }, placeholder: 'tool', value: newRule.tool, onChange: function (e) { setNewRule(Object.assign({}, newRule, { tool: e.target.value })) } }),
             React.createElement('input', { className: 'ag-set-input', style: { width: 150 }, placeholder: 'mode（可选）', value: newRule.mode, onChange: function (e) { setNewRule(Object.assign({}, newRule, { mode: e.target.value })) } }),
@@ -896,14 +896,14 @@ window.__ModuleLoader__.load({
               ),
         ),
 
-        // ---- 阈值 / 超时（④ Flash 判定参数） ----
+        // ---- 阈值 / 超时（④ 判定参数） ----
         React.createElement('div', { className: 'ag-set-card' },
           React.createElement('div', { className: 'ag-set-card-head' },
             React.createElement('div', { className: 'ag-set-card-title' },
-              React.createElement('span', { className: 'ag-set-stage' }, '④ Flash 判定'),
+              React.createElement('span', { className: 'ag-set-stage' }, '④ 判定'),
               '阈值与超时'),
             React.createElement('p', { className: 'ag-set-card-sub' },
-              '管道第四步：确认阈值 N（学习满 N 次后第 N+1 次自动放行）、Flash 判断超时（超时自动重试 1 次，仍失败转人工），以及判定模型（默认用 cordis.patch.yml 的值，也可选跟随会话默认模型或指定模型）。')),
+              '管道第四步：确认阈值 N（学习满 N 次后第 N+1 次自动放行）、判定超时（超时自动重试 1 次，仍失败转人工），以及判定模型（默认用 cordis.patch.yml 的值，也可选跟随会话默认模型或指定模型）。')),
           React.createElement('div', { className: 'ag-set-row' },
             React.createElement('span', { className: 'ag-set-item-meta' }, '确认阈值 N：'),
             React.createElement('input', {
@@ -917,7 +917,7 @@ window.__ModuleLoader__.load({
             React.createElement('span', { className: 'ag-set-item-meta' }, '满 ' + Number(threshold) + ' 次后第 ' + (Number(threshold) + 1) + ' 次起自动'),
           ),
           React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('span', { className: 'ag-set-item-meta' }, 'Flash 判断超时(ms)：'),
+            React.createElement('span', { className: 'ag-set-item-meta' }, '判定超时(ms)：'),
             React.createElement('input', {
               className: 'ag-set-input ag-set-input-num', type: 'number', min: 1000, value: timeoutMs,
               onChange: function (e) { setTimeoutMs(e.target.value) },

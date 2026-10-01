@@ -2,13 +2,13 @@
  * dsh-approval-gate — 自动审批（多级判定）持久插件 v3
  *
  * 挂在审批瀑布（approval/request）最前：当会话权限预设为 auto-approve 时，
- * 按「DENY → 白名单 → denyRules → flash（SAFE/硬类别/中立计数）→ 裁决学习」管道判定越界请求。
+ * 按「DENY → 白名单 → denyRules → 判定（SAFE/硬类别/中立计数）→ 裁决学习」管道判定越界请求。
  *
  * 设计目标：最小人工介入。人工只出现在两类场景：
  *   1. 必须人工确认：DENY 危险词、硬风险类别（deletion/credential/remote/system/bulk）
- *   2. 中立操作（neutral）：前 N-1 次人工确认；阈值状态按「指纹命中 → flash 第三方同类验证 → 人工」分流：
+ *   2. 中立操作（neutral）：前 N-1 次人工确认；阈值状态按「指纹命中 → 判定模型第三方同类验证 → 人工」分流：
  *      指纹命中（确认样本）→ 自动放行并沉淀规则（{tool,mode,category,contains}）
- *      指纹未命中但有样本 → flash 语义判断是否与确认样本同类（SAME 放行 / DIFFERENT 人工）
+ *      指纹未命中但有样本 → 判定模型语义判断是否与确认样本同类（SAME 放行 / DIFFERENT 人工）
  *      无样本 / 判不同 / 验证失败 → 人工确认
  *      拒绝 → 升级为永久人工规则（denyRules）；取消 → 不计数
  *
@@ -18,7 +18,7 @@
  * 其中 mode 仅两级：workspace-write（写工作区，可回补）/
  * danger-full-access（任意文件/系统，危险）。
  *
- * flash 判定协议（v3）：输出 `SAFE` 或 `RISKY:<category>`
+ * 判定协议（v3）：输出 `SAFE` 或 `RISKY:<category>`
  *   category ∈ { deletion, credential, remote, system, bulk, neutral }
  *   硬类别（前五个）→ 直接转人工；neutral（中立）→ 计数放行，第 N 次转人工裁决。
  *
@@ -414,7 +414,7 @@ const DEFAULT_ALLOW_RULES = [
   { mode: 'workspace-write', description: '工作区写入（可回补，对应 acceptEdits/workspace-write）' }
 ]
 
-// 硬风险类别：flash 判 RISKY 且命中这些类别 → 直接转人工（不计数、不学习、永远人工）
+// 硬风险类别：判定模型判 RISKY 且命中这些类别 → 直接转人工（不计数、不学习、永远人工）
 const DEFAULT_HARD_CATEGORIES = ['deletion', 'credential', 'remote', 'system', 'bulk']
 
 // ---- 规则管理 API 辅助 ----
@@ -900,7 +900,7 @@ learning.enabled = config.learning ? config.learning.enabled !== false : learnin
 learning.stats = learning.stats || {}
 // history：每个 key 最近人工确认过的操作样本（最多 10 个）：
 //   { fp: 操作指纹（路径/文件名/项目名，可空）, ctx: 操作背景和目的（justification 摘要） }
-// 供「flash 第三方同类验证」判断新操作是否与已确认样本同类。
+// 供「第三方同类验证」判断新操作是否与已确认样本同类。
 // 兼容旧格式：字符串数组 → { fp, ctx } 对象数组
 learning.history = learning.history || {}
 for (const k of Object.keys(learning.history)) {
@@ -938,7 +938,7 @@ function matchRule(rules, toolName, mode, category, justification) {
   return null
 }
 
-// 计数/学习 key：tool|mode|category（category 为 flash 判定的类别，neutral 走计数）
+// 计数/学习 key：tool|mode|category（category 为判定得到的类别，neutral 走计数）
 function learnKey(toolName, mode, category) {
   return `${toolName}|${mode || 'none'}|${category || 'none'}`
 }
@@ -1381,7 +1381,7 @@ export default {
     // 判定模型解析已上移到模块级 resolveJudgeModel()（设置页要与判定共用同一条链）
 
     /**
-     * 底层 flash 调用：流式请求并累积文本输出（可取消）。
+     * 底层判定模型调用：流式请求并累积文本输出（可取消）。
      * 由 judgeOnce / verifySimilarity 共用；异常向上抛，由 withRetry 决定重试或降级。
      * @returns {Promise<string>} 模型原始输出文本
      */
@@ -1403,14 +1403,14 @@ export default {
         else if (chunk.type === 'reasoning-delta') text += chunk.text
         else if (chunk.type === 'finish' && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
           const failure = chunk.reason.failure && chunk.reason.failure.message ? chunk.reason.failure.message : chunk.reason.kind
-          throw new Error('flash 调用失败: ' + failure)
+          throw new Error('判定调用失败: ' + failure)
         }
       }
       return text
     }
 
     /**
-     * 单次 flash 判定：输出 SAFE 或 RISKY:<category>。
+     * 单次判定：输出 SAFE 或 RISKY:<category>。
      * @returns {Promise<{verdict:'safe'|'risky', category?:string}>}
      */
     const judgeOnce = async (toolName, mode, justification, signal) => {
@@ -1435,7 +1435,7 @@ export default {
       if (/无法判断|无法确定|不确定|不能确定|无法评估|UNCERTAIN|CANNOT (JUDGE|DETERMINE|ASSESS)/i.test(text)) {
         return { verdict: 'risky', category: 'neutral' }
       }
-      throw new Error('flash 输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
+      throw new Error('判定输出无法解析: ' + JSON.stringify(text.slice(0, 120)))
     }
 
     const SIMILARITY_PROMPT = [
@@ -1453,7 +1453,7 @@ export default {
     ].join('\n')
 
     /**
-     * 单次「第三方同类验证」：把本次操作的背景和目的 + 用户历史确认样本给 flash，
+     * 单次「第三方同类验证」：把本次操作的背景和目的 + 用户历史确认样本给判定模型，
      * 判断是否属于已确认的同类操作（语义级，不依赖关键词）。
      * @returns {Promise<{verdict:'same'|'different'}>}
      */
@@ -1525,9 +1525,9 @@ export default {
       return { failed: true }
     }
 
-    /** flash 风险判定（带超时重试）：失败 → { verdict:'risky', category:'neutral', failed:true }（fail-safe） */
+    /** 风险判定（带超时重试）：失败 → { verdict:'risky', category:'neutral', failed:true }（fail-safe） */
     const judgeWithFlash = async (toolName, mode, justification) => {
-      const result = await withRetry((signal) => judgeOnce(toolName, mode, justification, signal), 'flash 判断')
+      const result = await withRetry((signal) => judgeOnce(toolName, mode, justification, signal), '判定')
       if (result.failed) return { verdict: 'risky', category: 'neutral', timedOut: true, failed: true }
       return result
     }
@@ -1595,7 +1595,7 @@ export default {
           return forwardToHuman(sessionId, toolName, mode, reason, justification, '', 'deny')
         }
 
-        // 2. 白名单层：命中规则 → 直接放行（确定性，不过 flash）
+        // 2. 白名单层：命中规则 → 直接放行（确定性，不过判定模型）
         const matchedRule = matchRule(config.allowRules, toolName, mode, null, justification)
         if (matchedRule) {
           audit(`ALLOW   ${toolName} mode=${mode || 'none'} (rule: ${matchedRule.description || 'matched'})`)
@@ -1603,7 +1603,7 @@ export default {
           return 'allowed-once'
         }
 
-        // 3. flash 判定
+        // 3. 判定
         const { verdict, category, timedOut, failed } = await judgeWithFlash(toolName, mode, justification)
 
         if (verdict === 'safe') {
@@ -1614,7 +1614,7 @@ export default {
 
         const cat = category || 'neutral'
 
-        // 4a. flash 完全失败（超时×2/异常×2）→ 转人工（fail-safe：无法判断绝不自动放行）
+        // 4a. 判定调用完全失败（超时×2/异常×2）→ 转人工（fail-safe：无法判断绝不自动放行）
         if (failed) {
           audit(`FAILED  ${toolName} mode=${mode || 'none'} → 人工 | ${reason.slice(0, 120)}`)
           return forwardToHuman(sessionId, toolName, mode, reason, justification, cat, 'flash-failed')
@@ -1681,7 +1681,7 @@ export default {
           }
 
           if (samples.length > 0) {
-            // 指纹未命中 → flash 第三方同类验证：把本次操作背景 + 用户确认样本给 flash，
+            // 指纹未命中 → 第三方同类验证：把本次操作背景 + 用户确认样本给判定模型，
             // 语义判断是否属于已确认的同类操作（不依赖关键词）
             const sim = await verifySimilarityWithRetry(toolName, mode, justification, samples)
             if (sim.verdict === 'same') {
@@ -1690,24 +1690,24 @@ export default {
                 const rule = { tool: toolName, category: cat, contains: fingerprint }
                 if (mode) rule.mode = mode
                 if (!config.allowRules.some((r) => r.tool === rule.tool && r.mode === rule.mode && r.category === rule.category && r.contains === rule.contains)) {
-                  rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} flash 同类验证`
+                  rule.description = `自动沉淀：${cat === 'neutral' ? '中立' : CATEGORY_LABELS[cat] || cat} 同类验证`
                   config.allowRules.push(rule)
                   saveJson(ALLOWLIST_PATH, config)
-                  audit(`LEARN   ${key} flash 判同类，已沉淀白名单 ${JSON.stringify(rule)}`)
+                  audit(`LEARN   ${key} 判定同类，已沉淀白名单 ${JSON.stringify(rule)}`)
                 }
                 delete learning.stats[key]
                 delete learning.history[key]
                 saveJson(LEARNING_PATH, learning)
               } else {
-                // 无指纹：不沉淀，保留样本与阈值位（下次同操作仍靠 flash 验证放行）
-                audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} flash 判同类（无指纹，未沉淀）| ${reason.slice(0, 100)}`)
+                // 无指纹：不沉淀，保留样本与阈值位（下次同操作仍靠判定模型验证放行）
+                audit(`SAME    ${toolName} mode=${mode || 'none'} category=${cat} 判定同类（无指纹，未沉淀）| ${reason.slice(0, 100)}`)
               }
               audit(`ALLOW   ${toolName} mode=${mode || 'none'} (flash-same) | ${reason.slice(0, 100)}`)
               recordAutoAllow(sessionId, toolName, mode, reason, justification, 'flash-same', filesOpt)
               return 'allowed-once'
             }
             // 判 DIFFERENT / 验证失败 → 落人工确认
-            audit(`SIMDIFF ${toolName} mode=${mode || 'none'} category=${cat} flash 判不同类 → 人工 | ${reason.slice(0, 120)}`)
+            audit(`SIMDIFF ${toolName} mode=${mode || 'none'} category=${cat} 判定不同类 → 人工 | ${reason.slice(0, 120)}`)
           }
 
           // 指纹未命中（且无样本可验证 / 判不同类）：转人工确认
@@ -1774,6 +1774,6 @@ export default {
       }
     }, { prepend: true })
 
-    console.log(`[${NAME}] v3 已挂载：DENY→白名单→denyRules→flash(SAFE/硬类别/中立计数${config.riskyThreshold})→裁决学习（配置: ${ALLOWLIST_PATH}）`)
+    console.log(`[${NAME}] v3 已挂载：DENY→白名单→denyRules→判定(SAFE/硬类别/中立计数${config.riskyThreshold})→裁决学习（配置: ${ALLOWLIST_PATH}）`)
   },
 }
