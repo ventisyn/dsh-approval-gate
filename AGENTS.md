@@ -6,13 +6,13 @@
 
 ## 1. 这是什么
 
-`dsh-approval-gate` 是 DeepSeek Harness（DSH）的持久插件，挂在审批瀑布 `approval/request` 的最前面，用 Flash 模型预判每次「沙箱越界」请求能否自动放行：
+`dsh-approval-gate` 是 DeepSeek Harness（DSH）的持久插件，挂在审批瀑布 `approval/request` 的最前面，用判定模型预判每次「沙箱越界」请求能否自动放行：
 
 - 可回补的常规操作 → 自动放行
 - 硬风险（`deletion` / `credential` / `remote` / `system` / `bulk`）→ **永远转人工**，不计数、不学习
 - 学习只针对人工确认过的操作，沉淀规则带操作指纹
 
-判定管道：`DENY 危险词 → allowRules 白名单 → denyRules → Flash（SAFE / RISKY:<类别>）→ 裁决学习`。
+判定管道：`DENY 危险词 → allowRules 白名单 → denyRules → 判定（SAFE / RISKY:<类别>）→ 裁决学习`。
 超时或调用失败重试 1 次，仍失败 → 转人工（fail-safe）。
 
 ## 2. 仓库结构
@@ -46,7 +46,7 @@ if (preset !== PRESET_NAME) return next()
 
 **reason 协议**：DSH 触发的越界请求 reason 固定为 `escalate sandbox to <mode>: <justification>`，`mode` 只有 `workspace-write` 和 `danger-full-access` 两级，由 `parseReason()` 解析。
 
-**Flash 协议**：`judgeOnce()` 输出 `SAFE` 或 `RISKY:<category>`；`verifySimilarity()` 输出 `SAME` / `DIFFERENT`。判定模型由 `resolveJudgeModel()` 决定，优先级：`allowlist.json` 的 `judgeModel`（热更新；**键存在即说了算**，`''` = 显式跟随会话模型）→ 插件行 `config.judgeModel`（`cordis.patch.yml`，启动时读取）→ `agentDefaultModel.currentSelection()`（会随会话切模型变化）→ 兜底 `deepseek-official / deepseek-flash`。写成 `provider/model` 即「钉死」，切换会话模型不再改变判定模型；把 allowlist 的键删掉则回到插件行的默认值（本仓库 bundle patch 默认钉死 `deepseek-flash`）。生效值与来源见 `GET /api/auto-approve/rules` 的 `judge` 字段。
+**判定协议**：`judgeOnce()` 输出 `SAFE` 或 `RISKY:<category>`；`verifySimilarity()` 输出 `SAME` / `DIFFERENT`。判定模型由 `resolveJudgeModel()` 决定，优先级：`allowlist.json` 的 `judgeModel`（热更新；**键存在即说了算**，`''` = 显式跟随会话模型）→ 插件行 `config.judgeModel`（`cordis.patch.yml`，启动时读取）→ `agentDefaultModel.currentSelection()`（会随会话切模型变化）→ 兜底 `deepseek-official / deepseek-flash`。写成 `provider/model` 即「钉死」，切换会话模型不再改变判定模型；把 allowlist 的键删掉则回到插件行的默认值（本仓库 bundle patch 默认钉死 `deepseek-flash`）。生效值与来源见 `GET /api/auto-approve/rules` 的 `judge` 字段。
 
 **数据文件**（全部在 `$DSH_HOME/auto-approve/`，`DSH_HOME` 默认 `~/.dsh`）：
 
@@ -153,7 +153,7 @@ type[(scope)]: description
 | 范围 | 对应 |
 | --- | --- |
 | `host` | `src/index.mjs` 的插件主体 / 生命周期 |
-| `judge` | 判定管道（DENY / 白名单 / Flash / 裁决） |
+| `judge` | 判定管道（DENY / 白名单 / 判定 / 裁决） |
 | `learn` | 样本沉淀与同类语义验证 |
 | `ui` | `client.js` 的提示条与「审批」视图 |
 | `snapshot` | diff 快照与撤销 |
