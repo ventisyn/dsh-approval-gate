@@ -777,15 +777,26 @@ function normalizeJudgeModel(value) {
 
 /** 当前生效的判定模型与来源；callFlash 与 getRulesSnapshot 共用同一条链 */
 function resolveJudgeModel() {
-  const fromRules = normalizeJudgeModel(config.judgeModel)
-  if (fromRules) return { provider: fromRules.provider, model: fromRules.model, source: 'allowlist.json' }
+  // allowlist.json 里配置过（键存在）= 说了算：'provider/model' 钉死，'' 显式跟随会话模型；
+  // 键不存在 = 未配置，落到插件行 config 的默认值（本仓库 bundle patch 默认钉死 deepseek-flash）
+  const configured = config.judgeModel !== undefined && config.judgeModel !== null
+  if (configured) {
+    const pinned = normalizeJudgeModel(config.judgeModel)
+    if (pinned) return { provider: pinned.provider, model: pinned.model, source: 'allowlist.json' }
+    return followSessionModel('follow')
+  }
   if (pluginJudgeModel) return { provider: pluginJudgeModel.provider, model: pluginJudgeModel.model, source: 'cordis.patch.yml' }
+  return followSessionModel('agentDefaultModel')
+}
+
+/** 跟随会话默认模型：会随会话里切换模型而变化；拿不到就退到硬兜底（fail-safe 由调用方保证） */
+function followSessionModel(source) {
   try {
     const sel = agentDefaultModelRef && typeof agentDefaultModelRef.currentSelection === 'function'
       ? agentDefaultModelRef.currentSelection()
       : undefined
     if (sel && typeof sel.provider === 'string' && sel.provider && typeof sel.model === 'string' && sel.model) {
-      return { provider: sel.provider, model: sel.model, source: 'agentDefaultModel' }
+      return { provider: sel.provider, model: sel.model, source }
     }
   } catch (error) {
     console.error(`[${NAME}] agentDefaultModel.currentSelection() failed`, error)
@@ -802,8 +813,9 @@ function normalizeConfig(raw) {
   cfg.hardCategories = cfg.hardCategories || DEFAULT_HARD_CATEGORIES
   cfg.riskyThreshold = cfg.riskyThreshold || 3
   cfg.judgeTimeoutMs = cfg.judgeTimeoutMs || 20000
-  // 判定模型：留空 = 跟随会话默认模型（会随切模型一起变）；填 provider/model 则钉死
-  cfg.judgeModel = cfg.judgeModel === undefined || cfg.judgeModel === null ? '' : cfg.judgeModel
+  // 判定模型是三态，不能给缺失的键补默认值：
+  //   'provider/model' = 钉死判定模型；'' = 显式跟随会话默认模型；键不存在 = 未配置（用插件行 config 的默认值）
+  if (cfg.judgeModel === undefined || cfg.judgeModel === null) delete cfg.judgeModel
   cfg.learning = cfg.learning || { enabled: true }
   cfg.autoConfigurePreset = cfg.autoConfigurePreset !== false
   return cfg
@@ -819,7 +831,6 @@ if (!config || typeof config !== 'object') {
     hardCategories: DEFAULT_HARD_CATEGORIES,
     riskyThreshold: 3,
     judgeTimeoutMs: 20000,
-    judgeModel: '',
     learning: { enabled: true },
     autoConfigurePreset: true
   }

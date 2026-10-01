@@ -46,13 +46,13 @@ if (preset !== PRESET_NAME) return next()
 
 **reason 协议**：DSH 触发的越界请求 reason 固定为 `escalate sandbox to <mode>: <justification>`，`mode` 只有 `workspace-write` 和 `danger-full-access` 两级，由 `parseReason()` 解析。
 
-**Flash 协议**：`judgeOnce()` 输出 `SAFE` 或 `RISKY:<category>`；`verifySimilarity()` 输出 `SAME` / `DIFFERENT`。判定模型由 `resolveJudgeModel()` 决定，优先级：`allowlist.json` 的 `judgeModel`（热更新）→ 插件行 `config.judgeModel`（`cordis.patch.yml`，启动时读取）→ `agentDefaultModel.currentSelection()`（会随会话切模型变化）→ 兜底 `deepseek-official / deepseek-flash`。前两级非空即「钉死」，切换会话模型不再改变判定模型；留空则跟随。生效值与来源见 `GET /api/auto-approve/rules` 的 `judge` 字段。
+**Flash 协议**：`judgeOnce()` 输出 `SAFE` 或 `RISKY:<category>`；`verifySimilarity()` 输出 `SAME` / `DIFFERENT`。判定模型由 `resolveJudgeModel()` 决定，优先级：`allowlist.json` 的 `judgeModel`（热更新；**键存在即说了算**，`''` = 显式跟随会话模型）→ 插件行 `config.judgeModel`（`cordis.patch.yml`，启动时读取）→ `agentDefaultModel.currentSelection()`（会随会话切模型变化）→ 兜底 `deepseek-official / deepseek-flash`。写成 `provider/model` 即「钉死」，切换会话模型不再改变判定模型；把 allowlist 的键删掉则回到插件行的默认值（本仓库 bundle patch 默认钉死 `deepseek-flash`）。生效值与来源见 `GET /api/auto-approve/rules` 的 `judge` 字段。
 
 **数据文件**（全部在 `$DSH_HOME/auto-approve/`，`DSH_HOME` 默认 `~/.dsh`）：
 
 | 文件 | 作用 |
 | --- | --- |
-| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `judgeModel`（钉死判定模型，留空=跟随会话模型） / `learning` / `autoConfigurePreset`（预设自动写入开关）；**改动即时生效（热更新）** |
+| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `judgeModel`（钉死判定模型；`''`=显式跟随会话模型，键不存在=用插件行默认值） / `learning` / `autoConfigurePreset`（预设自动写入开关）；**改动即时生效（热更新）** |
 | `learning.json` | 学习状态：`stats` 计数 + `history[key]` 人工确认样本 |
 | `audit.log` | 追加式决策流水：`ALLOW` / `HARD` / `RISKY` / `SAME` / `OUTCOME` / `LEARN` |
 | `events.jsonl` | UI 时间线数据源 |
