@@ -643,7 +643,7 @@ window.__ModuleLoader__.load({
       const [newRule, setNewRule] = React.useState({ tool: '', mode: '', category: '', contains: '' })
       const [threshold, setThreshold] = React.useState('3')
       const [timeoutMs, setTimeoutMs] = React.useState('20000')
-      const [judgeModel, setJudgeModel] = React.useState('')
+      const [judgeModel, setJudgeModel] = React.useState(null)
 
       const load = function () {
         fetch('/api/auto-approve/rules', { headers: { 'cache-control': 'no-cache' } })
@@ -653,7 +653,7 @@ window.__ModuleLoader__.load({
               setSnapshot(data)
               setThreshold(String(data.config.riskyThreshold))
               setTimeoutMs(String(data.config.judgeTimeoutMs))
-              setJudgeModel(String(data.config.judgeModel || ''))
+              setJudgeModel(data.judgeModelConfigured ? String(data.config.judgeModel || '') : null)
               setError(null)
             } else {
               setError('加载规则失败：' + JSON.stringify(data).slice(0, 200))
@@ -662,6 +662,29 @@ window.__ModuleLoader__.load({
           .catch(function (e) { setError('加载规则失败：' + String((e && e.message) || e)) })
       }
       React.useEffect(function () { load() }, [])
+
+      // 判定模型下拉候选：已注册 provider 的模型目录 + 当前生效值兜底
+      const judgeModelOptions = function (snap, current) {
+        const out = []
+        const seen = {}
+        const push = function (value, label) {
+          if (!value || seen[value]) return
+          seen[value] = 1
+          out.push({ value: value, label: label })
+        }
+        const list = (snap && Array.isArray(snap.models)) ? snap.models : []
+        list.forEach(function (m) {
+          if (!m || !m.provider || !m.model) return
+          const v = m.provider + '/' + m.model
+          push(v, m.name ? m.name + '（' + v + '）' : v)
+        })
+        if (snap && snap.judge && snap.judge.provider && snap.judge.model) {
+          const v = snap.judge.provider + '/' + snap.judge.model
+          push(v, v + '（当前生效）')
+        }
+        if (typeof current === 'string' && current) push(current, current + '（已保存）')
+        return out
+      }
 
       const showFeedback = function (msg, ok) {
         setFeedback({ msg: String(msg), ok: ok !== false })
@@ -873,6 +896,66 @@ window.__ModuleLoader__.load({
               ),
         ),
 
+        // ---- 阈值 / 超时（④ Flash 判定参数） ----
+        React.createElement('div', { className: 'ag-set-card' },
+          React.createElement('div', { className: 'ag-set-card-head' },
+            React.createElement('div', { className: 'ag-set-card-title' },
+              React.createElement('span', { className: 'ag-set-stage' }, '④ Flash 判定'),
+              '阈值与超时'),
+            React.createElement('p', { className: 'ag-set-card-sub' },
+              '管道第四步：确认阈值 N（学习满 N 次后第 N+1 次自动放行）、Flash 判断超时（超时自动重试 1 次，仍失败转人工），以及判定模型（默认用 cordis.patch.yml 的值，也可选跟随会话默认模型或指定模型）。')),
+          React.createElement('div', { className: 'ag-set-row' },
+            React.createElement('span', { className: 'ag-set-item-meta' }, '确认阈值 N：'),
+            React.createElement('input', {
+              className: 'ag-set-input ag-set-input-num', type: 'number', min: 1, value: threshold,
+              onChange: function (e) { setThreshold(e.target.value) },
+            }),
+            React.createElement('button', {
+              type: 'button', className: 'ag-set-btn', disabled: busy,
+              onClick: function () { api({ op: 'set', kind: 'riskyThreshold', value: Number(threshold) }) },
+            }, '保存'),
+            React.createElement('span', { className: 'ag-set-item-meta' }, '满 ' + Number(threshold) + ' 次后第 ' + (Number(threshold) + 1) + ' 次起自动'),
+          ),
+          React.createElement('div', { className: 'ag-set-row' },
+            React.createElement('span', { className: 'ag-set-item-meta' }, 'Flash 判断超时(ms)：'),
+            React.createElement('input', {
+              className: 'ag-set-input ag-set-input-num', type: 'number', min: 1000, value: timeoutMs,
+              onChange: function (e) { setTimeoutMs(e.target.value) },
+            }),
+            React.createElement('button', {
+              type: 'button', className: 'ag-set-btn', disabled: busy,
+              onClick: function () { api({ op: 'set', kind: 'judgeTimeoutMs', value: Number(timeoutMs) }) },
+            }, '保存'),
+          ),
+          React.createElement('div', { className: 'ag-set-row' },
+            React.createElement('span', { className: 'ag-set-item-meta' }, '判定模型：'),
+            React.createElement('select', {
+              className: 'ag-set-input ag-set-input-model',
+              value: judgeModel === null ? '__default__' : judgeModel,
+              onChange: function (e) { setJudgeModel(e.target.value) },
+            },
+              React.createElement('option', { value: '__default__' }, '默认（用 cordis.patch.yml 的值）'),
+              React.createElement('option', { value: '' }, '跟随会话默认模型'),
+              judgeModelOptions(snapshot, judgeModel).map(function (o) {
+                return React.createElement('option', { key: o.value, value: o.value }, o.label)
+              }),
+            ),
+            React.createElement('button', {
+              type: 'button', className: 'ag-set-btn', disabled: busy,
+              onClick: function () {
+                if (judgeModel === null) return api({ op: 'unset', kind: 'judgeModel' })
+                api({ op: 'set', kind: 'judgeModel', value: judgeModel })
+              },
+            }, '保存'),
+            React.createElement('span', { className: 'ag-set-item-meta' },
+              snapshot && snapshot.judge
+                ? '生效：' + (snapshot.judge.provider || '?') + '/' + (snapshot.judge.model || '?') + (snapshot.judge.source === 'agentDefaultModel' ? '（跟随默认模型，会随切模型变化）' : '（已钉死 · ' + snapshot.judge.source + '）')
+                : ''),
+          ),
+        ),
+
+
+
         // ---- 学习状态（⑤ 学习沉淀） ----
         React.createElement('div', { className: 'ag-set-card' },
           React.createElement('div', { className: 'ag-set-card-head' },
@@ -904,54 +987,74 @@ window.__ModuleLoader__.load({
               ),
         ),
 
-        // ---- 阈值 / 超时（④ Flash 判定参数） ----
-        React.createElement('div', { className: 'ag-set-card' },
-          React.createElement('div', { className: 'ag-set-card-head' },
-            React.createElement('div', { className: 'ag-set-card-title' },
-              React.createElement('span', { className: 'ag-set-stage' }, '④ Flash 判定'),
-              '阈值与超时'),
-            React.createElement('p', { className: 'ag-set-card-sub' },
-              '管道第四步：确认阈值 N（学习满 N 次后第 N+1 次自动放行）、Flash 判断超时（超时自动重试 1 次，仍失败转人工），判定模型留空则跟随会话默认模型（会随切模型变化）。')),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('span', { className: 'ag-set-item-meta' }, '确认阈值 N：'),
-            React.createElement('input', {
-              className: 'ag-set-input ag-set-input-num', type: 'number', min: 1, value: threshold,
-              onChange: function (e) { setThreshold(e.target.value) },
-            }),
-            React.createElement('button', {
-              type: 'button', className: 'ag-set-btn', disabled: busy,
-              onClick: function () { api({ op: 'set', kind: 'riskyThreshold', value: Number(threshold) }) },
-            }, '保存'),
-            React.createElement('span', { className: 'ag-set-item-meta' }, '满 ' + Number(threshold) + ' 次后第 ' + (Number(threshold) + 1) + ' 次起自动'),
-          ),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('span', { className: 'ag-set-item-meta' }, 'Flash 判断超时(ms)：'),
-            React.createElement('input', {
-              className: 'ag-set-input ag-set-input-num', type: 'number', min: 1000, value: timeoutMs,
-              onChange: function (e) { setTimeoutMs(e.target.value) },
-            }),
-            React.createElement('button', {
-              type: 'button', className: 'ag-set-btn', disabled: busy,
-              onClick: function () { api({ op: 'set', kind: 'judgeTimeoutMs', value: Number(timeoutMs) }) },
-            }, '保存'),
-          ),
-          React.createElement('div', { className: 'ag-set-row' },
-            React.createElement('span', { className: 'ag-set-item-meta' }, '判定模型：'),
-            React.createElement('input', {
-              className: 'ag-set-input ag-set-input-model', type: 'text', value: judgeModel,
-              placeholder: 'provider/model，留空 = 跟随会话默认模型',
-              onChange: function (e) { setJudgeModel(e.target.value) },
-            }),
-            React.createElement('button', {
-              type: 'button', className: 'ag-set-btn', disabled: busy,
-              onClick: function () { api({ op: 'set', kind: 'judgeModel', value: judgeModel }) },
-            }, '保存'),
-            React.createElement('span', { className: 'ag-set-item-meta' },
-              snapshot && snapshot.judge
-                ? '生效：' + (snapshot.judge.provider || '?') + '/' + (snapshot.judge.model || '?') + (snapshot.judge.source === 'agentDefaultModel' ? '（跟随默认模型，会随切模型变化）' : '（已钉死 · ' + snapshot.judge.source + '）')
-                : ''),
-          ),
-        ),
+        // ---- 反馈 ----
+        feedback
+          ? React.createElement('div', { className: feedback.ok ? 'ag-set-ok' : 'ag-set-err' }, feedback.msg)
+          : null,
+      )
+    }
+
+    const plugin = {
+      inject: ['timer'],
+      async apply(ctx) {
+        const slots = ctx.get('slots')
+        if (slots === undefined) return
+
+        let styleEl = null
+        try {
+          styleEl = document.createElement('style')
+          styleEl.setAttribute('data-plugin-css', 'dsh-approval-gate')
+          styleEl.textContent = CSS
+          document.head.appendChild(styleEl)
+        } catch (e) {
+          console.error('[dsh-approval-gate] 注入样式失败：' + String((e && e.message) || e))
+        }
+        ctx.effect(() => {
+          return () => {
+            if (styleEl && styleEl.parentNode) {
+              try { styleEl.parentNode.removeChild(styleEl) } catch (e) {}
+            }
+          }
+        })
+
+        // ✅ 自动放行提示条：输入框上方独立行（order=30，排在 todo/goal/queue 之下，天然不重叠）
+        slots.inject('conversation.input.dock', function () {
+          return slots.register(
+            { name: 'conversation.input.dock', id: 'dsh-approval-gate.notice', order: 30, label: '自动放行提示' },
+            function (props) { return React.createElement(NoticeStrip, { slotsProps: props }) },
+          )
+        })
+
+        // 审批历史视图：conversation.view（order=20，位于轨迹 order=10 右侧）
+        slots.inject('conversation.view', function () {
+          return slots.register(
+            {
+              name: 'conversation.view',
+              id: 'dsh-approval-gate.history',
+              order: 20,
+              label: '审批',
+              inject: (sessionId) => ({ sessionId }),
+            },
+            function (props) { return React.createElement(HistoryView, { slotsProps: props }) },
+          )
+        })
+
+        // 设置页：自动审批规则管理（settings.section）
+        slots.inject('settings.section', function () {
+          return slots.register(
+            { name: 'settings.section', id: 'dsh-approval-gate.settings', order: 60, label: '自动审批' },
+            function (props) { return React.createElement(RulesSettings, { slotsProps: props }) },
+          )
+        })
+      },
+    }
+
+    exports.default = plugin
+    exports.apply = plugin.apply
+    exports.inject = plugin.inject
+    return module.exports
+  },
+})
 
         // ---- 反馈 ----
         feedback
