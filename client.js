@@ -954,8 +954,6 @@ window.__ModuleLoader__.load({
           ),
         ),
 
-
-
         // ---- 学习状态（⑤ 学习沉淀） ----
         React.createElement('div', { className: 'ag-set-card' },
           React.createElement('div', { className: 'ag-set-card-head' },
@@ -986,75 +984,6 @@ window.__ModuleLoader__.load({
                 }),
               ),
         ),
-
-        // ---- 反馈 ----
-        feedback
-          ? React.createElement('div', { className: feedback.ok ? 'ag-set-ok' : 'ag-set-err' }, feedback.msg)
-          : null,
-      )
-    }
-
-    const plugin = {
-      inject: ['timer'],
-      async apply(ctx) {
-        const slots = ctx.get('slots')
-        if (slots === undefined) return
-
-        let styleEl = null
-        try {
-          styleEl = document.createElement('style')
-          styleEl.setAttribute('data-plugin-css', 'dsh-approval-gate')
-          styleEl.textContent = CSS
-          document.head.appendChild(styleEl)
-        } catch (e) {
-          console.error('[dsh-approval-gate] 注入样式失败：' + String((e && e.message) || e))
-        }
-        ctx.effect(() => {
-          return () => {
-            if (styleEl && styleEl.parentNode) {
-              try { styleEl.parentNode.removeChild(styleEl) } catch (e) {}
-            }
-          }
-        })
-
-        // ✅ 自动放行提示条：输入框上方独立行（order=30，排在 todo/goal/queue 之下，天然不重叠）
-        slots.inject('conversation.input.dock', function () {
-          return slots.register(
-            { name: 'conversation.input.dock', id: 'dsh-approval-gate.notice', order: 30, label: '自动放行提示' },
-            function (props) { return React.createElement(NoticeStrip, { slotsProps: props }) },
-          )
-        })
-
-        // 审批历史视图：conversation.view（order=20，位于轨迹 order=10 右侧）
-        slots.inject('conversation.view', function () {
-          return slots.register(
-            {
-              name: 'conversation.view',
-              id: 'dsh-approval-gate.history',
-              order: 20,
-              label: '审批',
-              inject: (sessionId) => ({ sessionId }),
-            },
-            function (props) { return React.createElement(HistoryView, { slotsProps: props }) },
-          )
-        })
-
-        // 设置页：自动审批规则管理（settings.section）
-        slots.inject('settings.section', function () {
-          return slots.register(
-            { name: 'settings.section', id: 'dsh-approval-gate.settings', order: 60, label: '自动审批' },
-            function (props) { return React.createElement(RulesSettings, { slotsProps: props }) },
-          )
-        })
-      },
-    }
-
-    exports.default = plugin
-    exports.apply = plugin.apply
-    exports.inject = plugin.inject
-    return module.exports
-  },
-})
 
         // ---- 反馈 ----
         feedback
