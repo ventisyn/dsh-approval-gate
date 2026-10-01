@@ -21,7 +21,7 @@
 | --- | --- |
 | `src/index.mjs` | host 端插件：审批钩子、判定管道、学习、HTTP API、快照管理（约 1500 行，无依赖） |
 | `client.js` | 浏览器端 bundle，经 `window.__ModuleLoader__.load({ id: 'dsh-approval-gate', factory })` 注册 |
-| `cordis.patch.yml` | bundle patch：只负责 `insert` 插件行；`auto-approve` 预设由插件启动时自动写入 profile 的 `cordis.patch.yml`（运行时无法扩展冻结的 presets 表，见第 4 节） |
+| `cordis.patch.yml` | bundle patch：`insert` 插件行，并给出插件行 `config.judgeModel` 的默认值（钉死判定模型）；`auto-approve` 预设由插件启动时自动写入 profile 的 `cordis.patch.yml`（运行时无法扩展冻结的 presets 表，见第 4 节） |
 | `package.json` | `main` / `exports`（`.` 与 `./client`）、`dsh.bundle.patch`、`dsh.client.platform = web` |
 | `docs/` | `GUIDE.md`、`GUIDE.en.md`、`VERIFY-*.md`、`screenshots/` |
 
@@ -46,13 +46,13 @@ if (preset !== PRESET_NAME) return next()
 
 **reason 协议**：DSH 触发的越界请求 reason 固定为 `escalate sandbox to <mode>: <justification>`，`mode` 只有 `workspace-write` 和 `danger-full-access` 两级，由 `parseReason()` 解析。
 
-**Flash 协议**：`judgeOnce()` 输出 `SAFE` 或 `RISKY:<category>`；`verifySimilarity()` 输出 `SAME` / `DIFFERENT`。模型由 `resolveModel()` 决定：优先 `agentDefaultModel.currentSelection()`，兜底 `deepseek-official / deepseek-v4-flash`。
+**Flash 协议**：`judgeOnce()` 输出 `SAFE` 或 `RISKY:<category>`；`verifySimilarity()` 输出 `SAME` / `DIFFERENT`。判定模型由 `resolveJudgeModel()` 决定，优先级：`allowlist.json` 的 `judgeModel`（热更新）→ 插件行 `config.judgeModel`（`cordis.patch.yml`，启动时读取）→ `agentDefaultModel.currentSelection()`（会随会话切模型变化）→ 兜底 `deepseek-official / deepseek-flash`。前两级非空即「钉死」，切换会话模型不再改变判定模型；留空则跟随。生效值与来源见 `GET /api/auto-approve/rules` 的 `judge` 字段。
 
 **数据文件**（全部在 `$DSH_HOME/auto-approve/`，`DSH_HOME` 默认 `~/.dsh`）：
 
 | 文件 | 作用 |
 | --- | --- |
-| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `learning` / `autoConfigurePreset`（预设自动写入开关）；**改动即时生效（热更新）** |
+| `allowlist.json` | 配置：`denyKeywords` / `allowRules` / `denyRules` / `hardCategories` / `riskyThreshold` / `judgeTimeoutMs` / `judgeModel`（钉死判定模型，留空=跟随会话模型） / `learning` / `autoConfigurePreset`（预设自动写入开关）；**改动即时生效（热更新）** |
 | `learning.json` | 学习状态：`stats` 计数 + `history[key]` 人工确认样本 |
 | `audit.log` | 追加式决策流水：`ALLOW` / `HARD` / `RISKY` / `SAME` / `OUTCOME` / `LEARN` |
 | `events.jsonl` | UI 时间线数据源 |
