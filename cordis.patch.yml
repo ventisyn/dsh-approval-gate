@@ -5,3 +5,7 @@
 - insert:
     - id: dsh-approval-gate
       name: 'dsh-approval-gate'
+      # 判定模型默认钉死 Flash：会话里切换模型不会再改变门控的判定模型。
+      # 留空 / 删掉本键 = 跟随会话默认模型；allowlist.json 的 judgeModel 可覆盖本值（热更新）。
+      config:
+        judgeModel: deepseek-official/deepseek-flash

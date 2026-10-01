@@ -446,9 +446,12 @@ function getRulesSnapshot() {
       hardCategories: config.hardCategories || [],
       riskyThreshold: config.riskyThreshold || 3,
       judgeTimeoutMs: config.judgeTimeoutMs || 20000,
+      judgeModel: config.judgeModel || '',
       learning: { enabled: learning.enabled !== false },
       autoConfigurePreset: config.autoConfigurePreset !== false
     },
+    // 生效的判定模型与来源：诊断「跟随默认模型」还是「已钉死」，避免静默降级
+    judge: resolveJudgeModel(),
     learning: {
       stats: learning.stats || {},
       history: learning.history || {}
@@ -604,6 +607,19 @@ function applyRuleOp(op, kind, value) {
     return { ok: true, set: true, value: n }
   }
 
+  // 判定模型（钉死判定所用模型）：接收 'provider/model' 或 { provider, model }；空 = 跟随会话默认模型
+  if (kind === 'judgeModel') {
+    if (op !== 'set') return { ok: false, error: 'judgeModel 使用 set 操作' }
+    const raw = value === undefined || value === null ? '' : value
+    const blank = raw === '' || (typeof raw === 'string' && raw.trim() === '')
+    const parsed = blank ? null : normalizeJudgeModel(raw)
+    if (!blank && !parsed) return { ok: false, error: 'judgeModel 格式应为 provider/model（或留空跟随会话默认模型）' }
+    config.judgeModel = blank ? '' : (typeof raw === 'string' ? raw.trim() : raw)
+    saveJson(ALLOWLIST_PATH, config)
+    audit(`CONFIG  judgeModel → ${parsed ? parsed.provider + '/' + parsed.model : '(跟随会话默认模型)'}`)
+    return { ok: true, set: true, value: config.judgeModel }
+  }
+
   const list = config[kind]
   if (!Array.isArray(list)) {
     // 学习状态终止：kind='learning'，value=key（tool|mode|category）
@@ -736,6 +752,47 @@ function audit(line) {
   } catch { /* 审计失败不影响主流程 */ }
 }
 
+// ── 判定模型解析（v1.2.0+）────────────────────────────────────────
+// 优先级：allowlist.json.judgeModel（热更新）→ 插件行 config.judgeModel（cordis.patch.yml，
+// 启动时读取）→ agentDefaultModel.currentSelection()（会随会话切模型变化）→ 硬兜底。
+// 前两级非空 = 判定模型被钉死，切换会话模型不再影响判定；留空 = 跟随。
+let pluginJudgeModel = null      // 插件行 config 里的钉死值（apply 启动时解析）
+let agentDefaultModelRef = null  // ctx.get('agentDefaultModel')，延迟绑定
+
+/** 解析判定模型配置值：'provider/model' 或 { provider, model }；空/非法 → null（表示跟随） */
+function normalizeJudgeModel(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const provider = String(value.provider || '').trim()
+    const model = String(value.model || '').trim()
+    return provider && model ? { provider, model } : null
+  }
+  if (typeof value !== 'string') return null
+  const s = value.trim()
+  const i = s.indexOf('/')
+  if (i <= 0 || i === s.length - 1) return null
+  const provider = s.slice(0, i).trim()
+  const model = s.slice(i + 1).trim()
+  return provider && model ? { provider, model } : null
+}
+
+/** 当前生效的判定模型与来源；callFlash 与 getRulesSnapshot 共用同一条链 */
+function resolveJudgeModel() {
+  const fromRules = normalizeJudgeModel(config.judgeModel)
+  if (fromRules) return { provider: fromRules.provider, model: fromRules.model, source: 'allowlist.json' }
+  if (pluginJudgeModel) return { provider: pluginJudgeModel.provider, model: pluginJudgeModel.model, source: 'cordis.patch.yml' }
+  try {
+    const sel = agentDefaultModelRef && typeof agentDefaultModelRef.currentSelection === 'function'
+      ? agentDefaultModelRef.currentSelection()
+      : undefined
+    if (sel && typeof sel.provider === 'string' && sel.provider && typeof sel.model === 'string' && sel.model) {
+      return { provider: sel.provider, model: sel.model, source: 'agentDefaultModel' }
+    }
+  } catch (error) {
+    console.error(`[${NAME}] agentDefaultModel.currentSelection() failed`, error)
+  }
+  return { provider: 'deepseek-official', model: 'deepseek-v4-flash', source: 'fallback' }
+}
+
 // 首次加载时初始化配置文件；旧版（v1）自动补齐 v3 字段
 function normalizeConfig(raw) {
   const cfg = raw && typeof raw === 'object' ? raw : {}
@@ -745,6 +802,8 @@ function normalizeConfig(raw) {
   cfg.hardCategories = cfg.hardCategories || DEFAULT_HARD_CATEGORIES
   cfg.riskyThreshold = cfg.riskyThreshold || 3
   cfg.judgeTimeoutMs = cfg.judgeTimeoutMs || 20000
+  // 判定模型：留空 = 跟随会话默认模型（会随切模型一起变）；填 provider/model 则钉死
+  cfg.judgeModel = cfg.judgeModel === undefined || cfg.judgeModel === null ? '' : cfg.judgeModel
   cfg.learning = cfg.learning || { enabled: true }
   cfg.autoConfigurePreset = cfg.autoConfigurePreset !== false
   return cfg
@@ -760,6 +819,7 @@ if (!config || typeof config !== 'object') {
     hardCategories: DEFAULT_HARD_CATEGORIES,
     riskyThreshold: 3,
     judgeTimeoutMs: 20000,
+    judgeModel: '',
     learning: { enabled: true },
     autoConfigurePreset: true
   }
@@ -874,11 +934,17 @@ function extractOperationFingerprint(text) {
 export default {
   name: NAME,
   inject: ['llm', 'approval', 'permissionPresets', 'agentDefaultModel', 'timer', 'webServer'],
-  apply(ctx) {
+  apply(ctx, pluginConfig) {
     const llm = ctx.llm
     const permissionPresets = ctx.permissionPresets
-    const agentDefaultModel = ctx.get('agentDefaultModel')
+    agentDefaultModelRef = ctx.get('agentDefaultModel')
     const PRESET_NAME = 'auto-approve'
+
+    // 插件行 config（cordis.patch.yml）：可选钉死判定模型，避免随会话切模型漂移
+    pluginJudgeModel = normalizeJudgeModel(pluginConfig && pluginConfig.judgeModel)
+    if (pluginConfig && pluginConfig.judgeModel && !pluginJudgeModel) {
+      console.warn(`[${NAME}] 插件 config.judgeModel 格式无效（应为 provider/model 或 { provider, model }）：${JSON.stringify(pluginConfig.judgeModel)}；按未配置处理`)
+    }
 
     // profile 的 cordis.patch.yml：优先用运行中的 profile 目录（换 harness 版本不用改代码）
     try {
@@ -1247,19 +1313,7 @@ export default {
       if (offSnapClearRoute) { try { offSnapClearRoute() } catch (e) {} }
     })
 
-    const resolveModel = () => {
-      try {
-        const sel = agentDefaultModel && typeof agentDefaultModel.currentSelection === 'function'
-          ? agentDefaultModel.currentSelection()
-          : undefined
-        if (sel && typeof sel.provider === 'string' && sel.provider && typeof sel.model === 'string' && sel.model) {
-          return { provider: sel.provider, model: sel.model }
-        }
-      } catch (error) {
-        console.error(`[${NAME}] agentDefaultModel.currentSelection() failed`, error)
-      }
-      return { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
-    }
+    // 判定模型解析已上移到模块级 resolveJudgeModel()（设置页要与判定共用同一条链）
 
     /**
      * 底层 flash 调用：流式请求并累积文本输出（可取消）。
@@ -1267,7 +1321,7 @@ export default {
      * @returns {Promise<string>} 模型原始输出文本
      */
     const callFlash = async (userText, systemPrompt, signal) => {
-      const { provider, model } = resolveModel()
+      const { provider, model } = resolveJudgeModel()
       let text = ''
       for await (const chunk of llm.stream({
         provider,
