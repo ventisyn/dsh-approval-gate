@@ -117,6 +117,7 @@ dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 ## 6. 编码约定
 
 - ESM（`.mjs`），单文件、无打包、无依赖。
+- **思考用简体中文**（推理、规划、自查都走中文），最终按用户语言输出。
 - 注释、日志、用户可见文案一律中文。
 - 保持失败语义：**任何异常都必须收敛到「转人工」，绝不能因为报错而放行**。
 - 客户端 UI 沿用现有槽位与 `order`，不要抢占其他插件的排序。
@@ -346,7 +347,7 @@ dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 <harness 版本>-v<插件版本>          例如 0.1.7-rc.2-v1.0.0
 ```
 
-- **harness 版本**：完整版本号的前缀（例 `0.2.0-rc.2`）。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/<harness 版本>`），但插件源码**不依赖**这一点 —— profile 路径运行时解析（第 4 节），源码里已无任何硬编码 harness 版本。**已验证可用：`0.1.7-rc.2`、`0.2.0-rc.2`**（两版的 `permission-presets` / `sandbox` / `approval` API 逐行一致）。换 harness 版本 = 新开一条版本线，**插件版本继续累加**。
+- **harness 版本**：完整版本号的前缀（例 `0.2.0-rc.2`）。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/<harness 版本>`），但插件源码**不依赖**这一点 —— profile 路径运行时解析（第 4 节），源码里已无任何硬编码 harness 版本。**已验证可用：`0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-alpha.2`**（各版的 `permission-presets` / `sandbox` / `approval` API 逐行一致）。换 harness 版本 = 新开一条版本线，**插件版本继续累加**。
 - **插件版本**：`X.Y.Z`，本插件初代版本为 `v1.0.0`；跨 harness 版本**继续累加**，不重置。
 - **完整版本号**：写进 `package.json` 的 `version` —— **这是唯一真源**；它同时是**版本分支名**（第 10 节）、发布 tag `release/<完整版本号>` 的名字，以及对应 GitHub Release 的标题（**标题不带 `release/` 前缀**，见第 10 节）。不要在 README、源码或别处重复维护。
 
