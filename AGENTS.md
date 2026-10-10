@@ -112,8 +112,7 @@ dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 
 ### 本机特有的坑
 
-- 该工作区上 `workspace-write` 沙箱无法物化 ACL（`SetNamedSecurityInfoW` 报 Win32 5，非管理员进程），**任何受限工具调用都会先失败、再升权到 `danger-full-access`**。因此实际流经门控的几乎全是 `danger-full-access` 升权请求，`allowRules` 里那条 `workspace-write` 规则在本机基本用不上。以管理员身份启动 `dsh web` 可根治。
-- `github.com:443` 偶发连接超时（同时 `api.github.com` 正常），push / fetch 失败先重试。
+见 `AGENTS.local.md`（本机特有信息不进仓库）——沙箱升权行为、`github.com` 连接抖动都在那里。
 
 ## 6. 编码约定
 
