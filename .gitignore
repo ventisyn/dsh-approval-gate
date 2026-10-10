@@ -8,3 +8,6 @@ vision.env
 # 本机出现的杂散目录：某组件以工作区为 cwd 写入 Windows 图标缓存，
 # 而 %SystemDrive% 在 PowerShell 里不会被展开，于是落成相对路径。
 %SystemDrive%/
+
+# 本机特有信息（AGENTS.md 第 5 节）：只留在本机，绝不进仓库
+AGENTS.local.md
