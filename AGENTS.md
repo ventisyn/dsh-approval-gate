@@ -344,7 +344,7 @@ dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 本插件的版本号**独立于 harness 版本号**，两者拼成完整版本号：
 
 ```
-<harness 版本>-v<插件版本>          例如 0.1.7-rc.2-v1.0.0
+<harness 版本>-v<插件版本>          例如 0.2.1-rc.5-v1.2.3
 ```
 
 - **harness 版本**：完整版本号的前缀（例 `0.2.0-rc.2`）。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/<harness 版本>`），但插件源码**不依赖**这一点 —— profile 路径运行时解析（第 4 节），源码里已无任何硬编码 harness 版本。**已验证可用：`0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-alpha.2`**（各版的 `permission-presets` / `sandbox` / `approval` API 逐行一致）。换 harness 版本 = 新开一条版本线，**插件版本继续累加**。
@@ -372,6 +372,6 @@ dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 完整流程见第 10 节，与版本号有关的只有两步：
 
 1. **开 dev 时**：把 `package.json` 的 `version` 提到目标完整版本号（例 `0.1.7-rc.2-v1.0.0 → 0.1.7-rc.2-v1.0.1`），提交 `chore: start 0.1.7-rc.2-v1.0.1`
-2. **验收改名后**：打 tag `git tag release/0.1.7-rc.2-v1.0.1` 并推送（加 `release/` 前缀是为了避开"分支名 = tag 名"导致的 `refname is ambiguous`）
+2. **验收改名后**：打 tag `git tag release/<完整版本号>` 并推送（加 `release/` 前缀是为了避开"分支名 = tag 名"导致的 `refname is ambiguous`）
 
-⚠️ 换 harness 版本时（例如 DSH 升到 `0.1.8`）：新开版本分支 `0.1.8-v<下一个插件版本>`，**插件版本继续累加**，不要重置回 v1.0.0。源码里已无硬编码的 harness 版本或 profile 名（第 4 节），不用再同步改常量；但**仍要按第 9 节实测**——`permissionPresets.current(session)` 这类 API 漂移恰恰是换版本时最容易踩的坑。
+⚠️ 换 harness 版本时（例如 DSH 升到 `0.2.2-alpha.2`）：新开版本分支 `<新 harness 版本>-v<下一个插件版本>`，**插件版本继续累加**，不要重置回 v1.0.0。源码里已无硬编码的 harness 版本或 profile 名（第 4 节），不用再同步改常量；但**仍要按第 9 节实测**——`permissionPresets.current(session)` 这类 API 漂移恰恰是换版本时最容易踩的坑。
