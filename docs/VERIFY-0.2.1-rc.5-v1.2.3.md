@@ -20,11 +20,13 @@
 | `profileContext.patchPath` / `.dir` | rc.5 可用；`GET /api/auto-approve/setup` 返回 `patchPathSource: profileContext.patchPath` |
 | 客户端槽位 `conversation.input.dock` / `conversation.view` / `settings.section` | 三个都还在 |
 
-也就是说，v1.2.2 踩过的那条「`permissionPresets.current()` 传错参数会静默降级成永远转人工」的坑，在 rc.5 上不构成新风险：签名没变。
+也就是说，v1.1.2 踩过的那条「`permissionPresets.current()` 传错参数会静默降级成永远转人工」的坑，在 rc.5 上不构成新风险：签名没变。
 
-## 3. 真机证据（rc.5 实例，运行中的 v1.2.2）
+## 3. 真机实测
 
-插件在 rc.5 实例上运行正常，本次工作期间的越界升权请求被自动判定并放行（`$DSH_HOME/auto-approve/audit.log`）：
+### 3.1 rc.5 实例上的持续运行证据
+
+插件在 rc.5 实例上运行正常，日常的越界升权请求被自动判定并放行（`$DSH_HOME/auto-approve/audit.log`）：
 
 ```
 [2026-10-31T16:15:51.734Z] ALLOW   pwsh mode=danger-full-access (flash-safe)
@@ -35,17 +37,28 @@
 [2026-10-31T17:01:56.553Z] ALLOW   pwsh mode=danger-full-access (flash-safe)
 ```
 
-- `GET /api/auto-approve/events` 有对应条目（`verdict: flash-safe`、`kind: auto`），共 1494 条历史。
-- 历史记录里也有硬类别转人工的样本：`HARD ... category=credential → 人工`。
-- `node --check src/index.mjs && node --check client.js` 通过。
+历史记录里也有硬类别转人工的样本（`HARD ... category=credential → 人工`）。
+
+### 3.2 独立临时实例上的用例实测
+
+环境：harness `0.2.1-rc.5` + 独立 `DSH_HOME`（不碰真实数据），profile 由真实 profile 的 `package.json` 与 `node_modules` 链接组成，加载的是 v1.2.2 的代码（与 dev 分支逐字节相同，只差 `version` 字符串）。会话权限预设切到 `auto-approve`（插件自动写入 profile 的 `cordis.patch.yml`，`GET /setup` 返回 `configured: true`、`patchPathSource: profileContext.patchPath`）。
+
+| 用例 | 触发 | 结果 |
+| --- | --- | --- |
+| ① 普通升权 | 模型 `write` 到工作区外的文本文件 | 界面「自动放行 · 判定安全」；`audit.log`: `ALLOW write mode=danger-full-access (flash-safe)`；`/events`: `verdict: flash-safe, kind: auto` |
+| ② 含删除语义 | 模型 `pwsh` 删除工作区外的 probe 文件 | 界面「等待审批」；`audit.log`: `HARD pwsh mode=danger-full-access category=deletion → 人工`；`/events`: `manual-pending`，人工批准后 `manual-approved` |
+| ②′ 同类再来一次 | 同上的第二次尝试 | 仍然 `HARD ... category=deletion → 人工`，**没有**自动放行——硬类别不学习，符合设计 |
+
+`learning.json` 未生成（硬类别不计数、不学习），与第 3 节的预期一致。
+
+`node --check src/index.mjs && node --check client.js` 通过。
 
 ## 4. 仍然未验证
 
-1. 含删除语义的请求转人工——本版没有主动构造（历史 audit 有硬类别样本，但不是在 v1.2.3 上复验的）。
-2. `flash-same` 命中（需要先人工确认一次同类操作，再触发第二次）。
-3. 学习沉淀（`learning.json` 的 `stats` / `history`）。
-4. 设置页与审批标签页的界面点击。
-5. 全新 profile 上的权限预设自举（本机 profile 早已配置好）。
+1. `flash-same` 命中（需要先有一个「非硬类别、判定 RISKY、人工确认」的样本）。
+2. 学习沉淀（`learning.json` 的 `stats` / `history`）。
+3. 设置页与审批标签页的界面点击（本轮只看请求内的提示条与审批卡片）。
+4. 全新 profile 上的权限预设自举（临时 profile 的 `cordis.patch.yml` 是从真实 profile 复制的）。
 
 ## 5. 隐私检查
 
