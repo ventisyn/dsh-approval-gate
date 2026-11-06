@@ -1,6 +1,6 @@
 {
   "name": "dsh-approval-gate",
-  "version": "0.2.1-rc.5-v1.2.3",
+  "version": "0.2.2-rc.1-v1.2.4",
   "description": "DeepSeek Harness 自动审批门控：判定模型预判写入/命令是否不可回补，安全自动批准、危险转人工（fail-safe），最小人工介入，含人工审查 UI",
   "type": "module",
   "main": "./src/index.mjs",
@@ -45,5 +45,8 @@
   "bugs": {
     "url": "https://github.com/ventisyn/dsh-approval-gate/issues"
   },
-  "author": "ventisyn"
+  "author": "ventisyn",
+  "engines": {
+    "dsh": ">=0.2.2-rc.1"
+  }
 }
