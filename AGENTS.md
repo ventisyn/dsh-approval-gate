@@ -344,7 +344,7 @@ dsh plugin --profile <profile 名> add link:<本地 clone 路径>
 本插件的版本号**独立于 harness 版本号**，两者拼成完整版本号：
 
 ```
-<harness 版本>-v<插件版本>          例如 0.2.1-rc.5-v1.2.3
+<harness 版本>-v<插件版本>          例如 0.2.2-rc.1-v1.2.4
 ```
 
 - **harness 版本**：完整版本号的前缀（例 `0.2.0-rc.2`）。按约定它同时是 **profile 目录名**（`~/.dsh/profiles/<harness 版本>`），但插件源码**不依赖**这一点 —— profile 路径运行时解析（第 4 节），源码里已无任何硬编码 harness 版本。**已验证可用：`0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-alpha.2`**（各版的 `permission-presets` / `sandbox` / `approval` API 逐行一致）。换 harness 版本 = 新开一条版本线，**插件版本继续累加**。
