@@ -44,6 +44,7 @@ dsh plugin --profile web add "github:moon09300731/dsh-approval-gate#main"
 - 首次写入后需要**重启 `dsh web`** 让预设进入权限下拉；已存在则不再写入。
 - 关闭自动写入：`allowlist.json` 设 `"autoConfigurePreset": false`；也可以在设置页「初始化权限预设」卡片手动写。
 - 自动写入只在缺失时补齐，不会改动文件中的其它内容；任何失败都只退回人工配置，不影响审批链路。
+- profile 的 `cordis.patch.yml` 不存在时（全新 profile，或被外部启动器在启动失败抢救时隔离），v1.2.5 起会直接创建并写入预设；设置页卡片把这种情况显示为「未配置」。
 
 自动写入失败或需要定制时，手动在 profile 的 `cordis.patch.yml` 中追加（或合并进已有的 `permission` 行——**loader 的 patch 会整体替换目标行的 config，若已有该行必须重述全部预设**）：
 

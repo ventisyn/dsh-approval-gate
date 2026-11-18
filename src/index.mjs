@@ -525,6 +525,9 @@ function getSetupState() {
     }
     return { ...base, configured: text.includes('auto-approve:') }
   } catch (e) {
+    // profile patch 不存在是正常状态（全新 profile，或被外部启动器在启动失败抢救时隔离）：
+    // 按「未配置」处理，让启动时的写入器去创建，而不是当成错误。
+    if (e && e.code === 'ENOENT') return { ...base, configured: false, missing: true }
     return { ...base, error: String((e && e.message) || e) }
   }
 }
@@ -540,7 +543,10 @@ function ensureAutoApprovePreset() {
     }
   }
   try {
-    const raw = readFileSync(profilePatchPath, 'utf8')
+    // profile patch 可能不存在：全新 profile，或被外部启动器在启动失败抢救时隔离。
+    // 这时按空文档处理，由下面的追加逻辑创建一个合法的 patch（不写 `[]` 空序列根）。
+    const missing = !existsSync(profilePatchPath)
+    const raw = missing ? '' : readFileSync(profilePatchPath, 'utf8')
     // 先归一化：剥掉空文档的 []（新建 profile 的默认内容）。
     // 文件若已被早期版本写坏（[] + 内容），这一步同时起到自愈作用。
     const text = stripEmptyFlowRoot(raw)
@@ -572,7 +578,7 @@ function ensureAutoApprovePreset() {
       const head = text.replace(/\s*$/, '')
       const next = (head ? head + '\n' : '') + banner + FULL_PERMISSION_BLOCK + AUTO_APPROVE_PRESET_YAML
       writeFileSync(profilePatchPath, next, 'utf8')
-      return { ok: true, status: 'added-entry', needRestart: true }
+      return { ok: true, status: missing ? 'created' : 'added-entry', needRestart: true }
     }
 
     // 有 permission 条目：在其 presets 块末尾插入 auto-approve

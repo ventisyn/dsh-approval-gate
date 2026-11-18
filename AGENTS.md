@@ -91,6 +91,7 @@ POST /api/auto-approve/snapshots-clear
 - **不要改用 `permissionPresets.registerAuto(admit)`：对本插件是死路。** 内置 `auto` 的规格固定为 `sandbox: danger-full-access`（`AUTO_PRESET_SPEC`），而 `dsh-sandbox` 的 `approveEscalation()` 只在请求模式**严格宽于**当前模式时才发审批——切到 `auto` 后沙箱全开、不再产生越界请求，门控整条管道永远不会被触发。另外 `registerAuto` 是排他的（`autoAdmit !== undefined` 即抛错），会与官方 `dsh-experimental-auto-review` 抢同一个保留位。结论：`auto-approve` 只能走**配置层**（profile 的 `cordis.patch.yml`），本插件选择在启动时自动写入。
 - 参考：`dsh-base` 的 patch 头声明「后面的 bundle patch 与用户层可按 id 覆盖前面的行，last write wins per row，且整个 `config` 是整体替换而非合并」。理论上可以把预设写进本仓库的 bundle patch，但那要求重述整张 presets 表、会在 harness 升级时盖掉新预设，故未采用。
 - **新建 profile 的用户层 `cordis.patch.yml` 默认内容就是 `[]`（flow 空序列）。** 往 `[]` 后面直接拼块序列项会产出**非法 YAML**，`dsh` 下次启动直接报 `YAMLException … (3:1)` 起不来；而**本次**启动因为配置早已解析完，表现为「插件正常、路由全 200、门控静默不触发」——极难察觉（v1.1.2 及更早踩过，把 `0.2.0-rc.2` 实例写成无法启动）。v1.1.3 起：写入前剥掉空的 `[]`，启动时自愈已写坏的文件（`status=repaired-empty-root`），并且 `GET /api/auto-approve/setup` 在检出该形态时返回 `malformed: true`。排查手法：`dsh --profile <名> --dump-config` 能立刻暴露合成失败。
+- **profile patch 不存在**（全新 profile，或被外部启动器在启动失败抢救时改名隔离）时，v1.2.5 起写入器会**直接创建**一个合法 patch 并写入预设（`status=created`），不再以 `ENOENT` 失败退回人工；`GET /api/auto-approve/setup` 也把「文件不存在」视为未配置而不是错误。
 
 ## 5. 开发环境
 
