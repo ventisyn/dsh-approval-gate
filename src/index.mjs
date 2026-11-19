@@ -1037,7 +1037,7 @@ export default {
 
     // ---- 自动配置权限预设：装完即自举，免去手工编辑 profile ----
     // 预设表在配置构造时冻结，运行时无法注册具名预设（内置 auto 是 DSH 保留位：它是
-    // danger-full-access，沙箱全开后不会再有越界请求，门控也就失效了，见 AGENTS.md 第 4 节）。
+    // danger-full-access，沙箱全开后不会再有越界请求，门控也就失效了，见 AGENTS.md 第 3 节）。
     // 唯一可行的自动化就是替用户把预设写进 profile 的 cordis.patch.yml；
     // 任何失败都只是退回「人工配置」，绝不影响审批链路本身。
     if (!presetAutoConfigured) {
