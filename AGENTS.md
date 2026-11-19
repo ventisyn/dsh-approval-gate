@@ -110,6 +110,8 @@ POST /api/auto-approve/snapshots-clear
 
 每个已发布的完整版本对应一条版本分支（分支名 = 完整版本号）。改动先落在以目标版本命名的 `/dev` 分支上，验收通过后把 dev 改名成版本分支即可发布。**开工前先定版本号**（评错了 `git branch -m` 改名重来），版本号要落在 dev 的第一个提交里。
 
+**发布是问出来的**：验收通过 ≠ 发布许可。改完、测试全绿之后先问用户要不要发布到远端；用户明确同意才执行下面的推送部分，拒绝或没回复就停在 dev 分支（不推送、不改名、不打 tag）。
+
 ```powershell
 # 1) 从当前版本分支切 dev，改 package.json version，提交 start
 git checkout <已发布的完整版本号>
@@ -119,7 +121,7 @@ git commit -am "chore: start <目标完整版本号>"
 # 2) 开发 → node --check → 按第 6 节实测 → 按第 7 节提交
 git push -u origin <目标完整版本号>/dev
 
-# 3) 发布前隐私检查（清单只在本机），然后把 dev 改名成版本分支
+# 3) 用户同意发布后：隐私检查（清单只在本机），然后把 dev 改名成版本分支
 git branch -m <目标完整版本号>/dev <目标完整版本号>
 git push origin --delete <目标完整版本号>/dev     # 必须先删远端 dev，否则目录前缀冲突
 git push -u origin <目标完整版本号>
@@ -127,8 +129,14 @@ git tag release/<目标完整版本号>
 git push origin release/<目标完整版本号>          # 先推 tag
 gh release create release/<目标完整版本号> --repo ventisyn/dsh-approval-gate --title "<目标完整版本号>" --notes-file <说明.md> --verify-tag
 gh api -X PATCH repos/ventisyn/dsh-approval-gate -f default_branch=<目标完整版本号>
+
+# 4) 发布后让本机实例加载新版本（用户同意发布后才做）
+dsh plugin --profile <profile 名> add github:ventisyn/dsh-approval-gate#release/<目标完整版本号>
+# 然后重启 dsh web（优先模型工具 restart_harness；不可用时让用户点设置页「重启 DSH」）
 ```
 
+- **发布前必须问用户**：验收通过只代表可以问，不代表可以推；用户拒绝或没回复时停在 dev 分支。
+- **dev 分支推送也是公开行为**：如果用户要求完全离线，连 `git push -u origin <目标完整版本号>/dev` 也不要做。
 - **每次发布都要建 GitHub Release，不能只打 tag**：DSHL 的版本列表分别抓 `releases` 与 `tags` 两个接口，裸 tag 显示为「标签」，只有 Release 才显示「正式版」；列表渲染的是 Release 的标题，所以标题写干净版本号。tag 名带 `release/` 前缀、分支名不带：两者同名会让 git 报 `refname is ambiguous`。
 - **先删远端 `/dev`，再推版本分支**：远端不能同时存在 `refs/heads/X` 与 `refs/heads/X/dev`，否则 GitHub 以 `directory file conflict` 拒绝。`/dev` 同时只有一条，改名成版本分支后下一轮再开。
 - **先推 tag 再建 Release**：`gh release create` 在远端 tag 不存在时会基于**当时的默认分支**建 tag（踩过：tag 指到了上一个版本的提交，只能删 tag / Release 重建），所以用 `--verify-tag`。
